@@ -1,13 +1,8 @@
 import * as React from "react";
 import Frame from "./components/Frame";
+import { EmbedProps as Props } from ".";
 
-const URL_REGEX = /(http|https)?:\/\/(www\.)?vimeo.com\/(?:channels\/(?:\w+\/)?|groups\/([^/]*)\/videos\/|)(\d+)(?:|\/\?)/;
-type Props = {
-  attrs: {
-    href: string;
-    matches: string[];
-  };
-};
+const URL_REGEX = /(http|https)?:\/\/(www\.)?vimeo.com\/(?:channels\/(?:\w+\/)?|groups\/([^/]*)\/videos\/|)(\d\w+)(?:\/|\?)?(\d\w+)?/;
 
 export default class Vimeo extends React.Component<Props> {
   static ENABLED = [URL_REGEX];
@@ -15,12 +10,17 @@ export default class Vimeo extends React.Component<Props> {
   render() {
     const { matches } = this.props.attrs;
     const videoId = matches[4];
+    const hId = matches[5];
+
     return (
       <Frame
         {...this.props}
-        // @ts-expect-error ts-migrate(2322) FIXME: Type '{ src: string; title: string; attrs: { href:... Remove this comment to see the full error message
-        src={`https://player.vimeo.com/video/${videoId}?byline=0`}
+        src={`https://player.vimeo.com/video/${videoId}?byline=0${
+          hId ? `&h=${hId}` : ""
+        }`}
         title={`Vimeo Embed (${videoId})`}
+        height="412px"
+        border={false}
       />
     );
   }

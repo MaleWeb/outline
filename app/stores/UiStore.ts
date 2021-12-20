@@ -37,6 +37,9 @@ class UiStore {
   activeCollectionId: string | undefined;
 
   @observable
+  observingUserId: string | undefined;
+
+  @observable
   progressBarVisible = false;
 
   @observable
@@ -121,13 +124,9 @@ class UiStore {
   @action
   setActiveDocument = (document: Document): void => {
     this.activeDocumentId = document.id;
+    this.observingUserId = undefined;
 
-    if (
-      document.publishedAt &&
-      !document.isArchived &&
-      !document.isDeleted &&
-      !document.isTemplate
-    ) {
+    if (document.isActive) {
       this.activeCollectionId = document.collectionId;
     }
   };
@@ -148,8 +147,14 @@ class UiStore {
   };
 
   @action
+  setObservingUser = (userId: string | undefined): void => {
+    this.observingUserId = userId;
+  };
+
+  @action
   clearActiveDocument = (): void => {
     this.activeDocumentId = undefined;
+    this.observingUserId = undefined;
   };
 
   @action

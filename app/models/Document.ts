@@ -1,13 +1,15 @@
 import { addDays, differenceInDays } from "date-fns";
 import invariant from "invariant";
 import { floor } from "lodash";
-import { action, computed, observable, set } from "mobx";
+import { action, computed, observable } from "mobx";
 import parseTitle from "@shared/utils/parseTitle";
 import unescape from "@shared/utils/unescape";
 import DocumentsStore from "~/stores/DocumentsStore";
 import BaseModel from "~/models/BaseModel";
 import User from "~/models/User";
+import { NavigationNode } from "~/types";
 import View from "./View";
+import Field from "./decorators/Field";
 
 type SaveOptions = {
   publish?: boolean;
@@ -28,9 +30,39 @@ export default class Document extends BaseModel {
 
   store: DocumentsStore;
 
-  collaboratorIds: string[];
-
+  @Field
+  @observable
   collectionId: string;
+
+  @Field
+  @observable
+  id: string;
+
+  @Field
+  @observable
+  text: string;
+
+  @Field
+  @observable
+  title: string;
+
+  @Field
+  @observable
+  template: boolean;
+
+  @Field
+  @observable
+  fullWidth: boolean;
+
+  @Field
+  @observable
+  templateId: string | undefined;
+
+  @Field
+  @observable
+  parentDocumentId: string | undefined;
+
+  collaboratorIds: string[];
 
   createdAt: string;
 
@@ -40,21 +72,7 @@ export default class Document extends BaseModel {
 
   updatedBy: User;
 
-  id: string;
-
-  team: string;
-
   pinned: boolean;
-
-  text: string;
-
-  title: string;
-
-  template: boolean;
-
-  templateId: string | undefined;
-
-  parentDocumentId: string | undefined;
 
   publishedAt: string | undefined;
 
@@ -76,7 +94,7 @@ export default class Document extends BaseModel {
   constructor(fields: Record<string, any>, store: DocumentsStore) {
     super(fields, store);
 
-    if (this.isNewDocument && this.isFromTemplate) {
+    if (this.isPersistedOnce && this.isFromTemplate) {
       this.title = "";
     }
   }
@@ -122,7 +140,7 @@ export default class Document extends BaseModel {
   }
 
   @computed
-  get isNew(): boolean {
+  get isBadgedNew(): boolean {
     return (
       !this.lastViewedAt &&
       differenceInDays(new Date(), new Date(this.createdAt)) < 14
@@ -169,7 +187,7 @@ export default class Document extends BaseModel {
   }
 
   @computed
-  get isNewDocument(): boolean {
+  get isPersistedOnce(): boolean {
     return this.createdAt === this.updatedAt;
   }
 
@@ -197,11 +215,6 @@ export default class Document extends BaseModel {
     return this.store.rootStore.shares.create({
       documentId: this.id,
     });
-  };
-
-  @action
-  updateFromJson = (data: Record<string, any>) => {
-    set(this, data);
   };
 
   archive = () => {
@@ -267,7 +280,7 @@ export default class Document extends BaseModel {
   @action
   view = () => {
     // we don't record views for documents in the trash
-    if (this.isDeleted || !this.publishedAt) {
+    if (this.isDeleted) {
       return;
     }
 
@@ -302,6 +315,7 @@ export default class Document extends BaseModel {
           {
             id: this.id,
             title: options.title || this.title,
+            fullWidth: this.fullWidth,
           },
           {
             lastRevision: options.lastRevision,
@@ -318,7 +332,7 @@ export default class Document extends BaseModel {
   };
 
   @action
-  save = async (options: SaveOptions | undefined) => {
+  save = async (options?: SaveOptions | undefined) => {
     if (this.isSaving) return this;
     const isCreating = !this.id;
     this.isSaving = true;
@@ -340,24 +354,21 @@ export default class Document extends BaseModel {
         );
       }
 
-      if (options?.lastRevision) {
-        return await this.store.update(
-          {
-            id: this.id,
-            title: this.title,
-            text: this.text,
-            templateId: this.templateId,
-          },
-          {
-            lastRevision: options?.lastRevision,
-            publish: options?.publish,
-            done: options?.done,
-            autosave: options?.autosave,
-          }
-        );
-      }
-
-      throw new Error("Attempting to update without a lastRevision");
+      return await this.store.update(
+        {
+          id: this.id,
+          title: this.title,
+          text: this.text,
+          fullWidth: this.fullWidth,
+          templateId: this.templateId,
+        },
+        {
+          lastRevision: options?.lastRevision || this.revision,
+          publish: options?.publish,
+          done: options?.done,
+          autosave: options?.autosave,
+        }
+      );
     } finally {
       this.isSaving = false;
     }
@@ -375,6 +386,24 @@ export default class Document extends BaseModel {
     const result = this.text.trim().split("\n").slice(0, paragraphs).join("\n");
     return result;
   };
+
+  @computed
+  get isActive(): boolean {
+    return !this.isDeleted && !this.isTemplate && !this.isArchived;
+  }
+
+  @computed
+  get asNavigationNode(): NavigationNode {
+    return {
+      id: this.id,
+      title: this.title,
+      children: this.store.orderedData
+        .filter((doc) => doc.parentDocumentId === this.id)
+        .map((doc) => doc.asNavigationNode),
+      url: this.url,
+      isDraft: this.isDraft,
+    };
+  }
 
   download = async () => {
     // Ensure the document is upto date with latest server contents

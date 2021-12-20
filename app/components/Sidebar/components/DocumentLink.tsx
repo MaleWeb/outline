@@ -1,16 +1,21 @@
 import { observer } from "mobx-react";
+import { PlusIcon } from "outline-icons";
 import * as React from "react";
 import { useDrag, useDrop } from "react-dnd";
 import { useTranslation } from "react-i18next";
+import { Link } from "react-router-dom";
 import styled from "styled-components";
 import { MAX_TITLE_LENGTH } from "@shared/constants";
+import { sortNavigationNodes } from "@shared/utils/collections";
 import Collection from "~/models/Collection";
 import Document from "~/models/Document";
 import Fade from "~/components/Fade";
+import NudeButton from "~/components/NudeButton";
 import useBoolean from "~/hooks/useBoolean";
 import useStores from "~/hooks/useStores";
 import DocumentMenu from "~/menus/DocumentMenu";
 import { NavigationNode } from "~/types";
+import { newDocumentPath } from "~/utils/routeHelpers";
 import Disclosure from "./Disclosure";
 import DropCursor from "./DropCursor";
 import DropToImport from "./DropToImport";
@@ -22,7 +27,8 @@ type Props = {
   canUpdate: boolean;
   collection?: Collection;
   activeDocument: Document | null | undefined;
-  prefetchDocument: (documentId: string) => Promise<any>;
+  prefetchDocument: (documentId: string) => Promise<Document | void>;
+  isDraft?: boolean;
   depth: number;
   index: number;
   parentId?: string;
@@ -35,6 +41,7 @@ function DocumentLink(
     collection,
     activeDocument,
     prefetchDocument,
+    isDraft,
     depth,
     index,
     parentId,
@@ -44,9 +51,11 @@ function DocumentLink(
   const { documents, policies } = useStores();
   const { t } = useTranslation();
   const isActiveDocument = activeDocument && activeDocument.id === node.id;
-  const hasChildDocuments = !!node.children.length;
+  const hasChildDocuments =
+    !!node.children.length || activeDocument?.parentDocumentId === node.id;
   const document = documents.get(node.id);
   const { fetchChildDocuments } = documents;
+  const [isEditing, setIsEditing] = React.useState(false);
 
   React.useEffect(() => {
     if (isActiveDocument && hasChildDocuments) {
@@ -135,9 +144,10 @@ function DocumentLink(
     }),
     canDrag: () => {
       return (
-        policies.abilities(node.id).move ||
-        policies.abilities(node.id).archive ||
-        policies.abilities(node.id).delete
+        !isDraft &&
+        (policies.abilities(node.id).move ||
+          policies.abilities(node.id).archive ||
+          policies.abilities(node.id).delete)
       );
     },
   });
@@ -162,7 +172,9 @@ function DocumentLink(
       documents.move(item.id, collection.id, node.id);
     },
     canDrop: (_item, monitor) =>
-      !!pathToNode && !pathToNode.includes(monitor.getItem<DragObject>().id),
+      !isDraft &&
+      !!pathToNode &&
+      !pathToNode.includes(monitor.getItem<DragObject>().id),
     hover: (item, monitor) => {
       // Enables expansion of document children when hovering over the document
       // for more than half a second.
@@ -216,6 +228,39 @@ function DocumentLink(
     }),
   });
 
+  const nodeChildren = React.useMemo(() => {
+    if (
+      collection &&
+      activeDocument?.isDraft &&
+      activeDocument?.isActive &&
+      activeDocument?.parentDocumentId === node.id
+    ) {
+      return sortNavigationNodes(
+        [activeDocument?.asNavigationNode, ...node.children],
+        collection.sort
+      );
+    }
+
+    return node.children;
+  }, [
+    activeDocument?.isActive,
+    activeDocument?.isDraft,
+    activeDocument?.parentDocumentId,
+    activeDocument?.asNavigationNode,
+    collection,
+    node,
+  ]);
+
+  const handleTitleEditing = React.useCallback((isEditing: boolean) => {
+    setIsEditing(isEditing);
+  }, []);
+
+  const title =
+    (activeDocument?.id === node.id ? activeDocument.title : node.title) ||
+    t("Untitled");
+
+  const can = policies.abilities(node.id);
+
   return (
     <>
       <Relative onDragLeave={resetHoverExpanding}>
@@ -244,8 +289,9 @@ function DocumentLink(
                       />
                     )}
                     <EditableTitle
-                      title={node.title || t("Untitled")}
+                      title={title}
                       onSubmit={handleTitleChange}
+                      onEditing={handleTitleEditing}
                       canUpdate={canUpdate}
                       maxLength={MAX_TITLE_LENGTH}
                     />
@@ -259,10 +305,26 @@ function DocumentLink(
                 exact={false}
                 showActions={menuOpen}
                 scrollIntoViewIfNeeded={!document?.isStarred}
+                isDraft={isDraft}
                 ref={ref}
                 menu={
-                  document && !isMoving ? (
+                  document &&
+                  !isMoving &&
+                  !isEditing &&
+                  !isDraggingAnyDocument ? (
                     <Fade>
+                      {can.createChildDocument && (
+                        <NudeButton
+                          type={undefined}
+                          aria-label={t("New nested document")}
+                          as={Link}
+                          to={newDocumentPath(document.collectionId, {
+                            parentDocumentId: document.id,
+                          })}
+                        >
+                          <PlusIcon />
+                        </NudeButton>
+                      )}
                       <DocumentMenu
                         document={document}
                         onOpen={handleMenuOpen}
@@ -279,23 +341,22 @@ function DocumentLink(
           <DropCursor isActiveDrop={isOverReorder} innerRef={dropToReorder} />
         )}
       </Relative>
-      {expanded && !isDragging && (
-        <>
-          {node.children.map((childNode, index) => (
-            <ObservedDocumentLink
-              key={childNode.id}
-              collection={collection}
-              node={childNode}
-              activeDocument={activeDocument}
-              prefetchDocument={prefetchDocument}
-              depth={depth + 1}
-              canUpdate={canUpdate}
-              index={index}
-              parentId={node.id}
-            />
-          ))}
-        </>
-      )}
+      {expanded &&
+        !isDragging &&
+        nodeChildren.map((childNode, index) => (
+          <ObservedDocumentLink
+            key={childNode.id}
+            collection={collection}
+            node={childNode}
+            activeDocument={activeDocument}
+            prefetchDocument={prefetchDocument}
+            isDraft={childNode.isDraft}
+            depth={depth + 1}
+            canUpdate={canUpdate}
+            index={index}
+            parentId={node.id}
+          />
+        ))}
     </>
   );
 }

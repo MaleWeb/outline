@@ -1,5 +1,6 @@
 import {
   BookmarkedIcon,
+  BicycleIcon,
   CollectionIcon,
   CoinsIcon,
   AcademicCapIcon,
@@ -26,14 +27,18 @@ import {
   SportIcon,
   SunIcon,
   TargetIcon,
+  TerminalIcon,
   ToolsIcon,
   VehicleIcon,
   WarningIcon,
+  DatabaseIcon,
+  SmileyIcon,
+  LightningIcon,
 } from "outline-icons";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 import { useMenuState, MenuButton, MenuItem } from "reakit/Menu";
-import styled from "styled-components";
+import styled, { useTheme } from "styled-components";
 import breakpoint from "styled-components-breakpoint";
 import ContextMenu from "~/components/ContextMenu";
 import Flex from "~/components/Flex";
@@ -54,6 +59,22 @@ const TwitterPicker = React.lazy(
 );
 
 export const icons = {
+  academicCap: {
+    component: AcademicCapIcon,
+    keywords: "learn teach lesson guide tutorial onboarding training",
+  },
+  bicycle: {
+    component: BicycleIcon,
+    keywords: "bicycle bike cycle",
+  },
+  beaker: {
+    component: BeakerIcon,
+    keywords: "lab research experiment test",
+  },
+  buildingBlocks: {
+    component: BuildingBlocksIcon,
+    keywords: "app blocks product prototype",
+  },
   bookmark: {
     component: BookmarkedIcon,
     keywords: "bookmark",
@@ -70,18 +91,6 @@ export const icons = {
     component: CameraIcon,
     keywords: "photo picture",
   },
-  academicCap: {
-    component: AcademicCapIcon,
-    keywords: "learn teach lesson guide tutorial onboarding training",
-  },
-  beaker: {
-    component: BeakerIcon,
-    keywords: "lab research experiment test",
-  },
-  buildingBlocks: {
-    component: BuildingBlocksIcon,
-    keywords: "app blocks product prototype",
-  },
   cloud: {
     component: CloudIcon,
     keywords: "cloud service aws infrastructure",
@@ -89,6 +98,10 @@ export const icons = {
   code: {
     component: CodeIcon,
     keywords: "developer api code development engineering programming",
+  },
+  database: {
+    component: DatabaseIcon,
+    keywords: "server ops database",
   },
   email: {
     component: EmailIcon,
@@ -117,6 +130,10 @@ export const icons = {
   lightbulb: {
     component: LightBulbIcon,
     keywords: "lightbulb idea",
+  },
+  lightning: {
+    component: LightningIcon,
+    keywords: "lightning fast zap",
   },
   math: {
     component: MathIcon,
@@ -158,9 +175,17 @@ export const icons = {
     component: SportIcon,
     keywords: "sport outdoor racket game",
   },
+  smiley: {
+    component: SmileyIcon,
+    keywords: "emoji smiley happy",
+  },
   target: {
     component: TargetIcon,
     keywords: "target goal sales",
+  },
+  terminal: {
+    component: TerminalIcon,
+    keywords: "terminal code",
   },
   tools: {
     component: ToolsIcon,
@@ -197,6 +222,7 @@ type Props = {
 
 function IconPicker({ onOpen, onClose, icon, color, onChange }: Props) {
   const { t } = useTranslation();
+  const theme = useTheme();
   const menu = useMenuState({
     modal: true,
     placement: "bottom-end",
@@ -248,6 +274,19 @@ function IconPicker({ onOpen, onClose, icon, color, onChange }: Props) {
               onChange={(color) => onChange(color.hex, icon)}
               colors={colors}
               triangle="hide"
+              styles={{
+                default: {
+                  hash: {
+                    color: theme.text,
+                    background: theme.inputBorder,
+                  },
+                  input: {
+                    color: theme.text,
+                    boxShadow: `inset 0 0 0 1px ${theme.inputBorder}`,
+                    background: "transparent",
+                  },
+                },
+              }}
             />
           </React.Suspense>
         </Flex>

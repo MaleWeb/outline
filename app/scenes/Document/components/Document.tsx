@@ -11,6 +11,7 @@ import {
   RouteComponentProps,
   StaticContext,
   withRouter,
+  Redirect,
 } from "react-router";
 import styled from "styled-components";
 import breakpoint from "styled-components-breakpoint";
@@ -41,6 +42,7 @@ import {
   documentHistoryUrl,
   editDocumentUrl,
   documentUrl,
+  updateDocumentUrl,
 } from "~/utils/routeHelpers";
 import Container from "./Container";
 import Contents from "./Contents";
@@ -52,7 +54,6 @@ import PublicReferences from "./PublicReferences";
 import References from "./References";
 
 const AUTOSAVE_DELAY = 3000;
-const IS_DIRTY_DELAY = 500;
 
 type Props = WithTranslation &
   RootStore &
@@ -74,7 +75,7 @@ type Props = WithTranslation &
 @observer
 class DocumentScene extends React.Component<Props> {
   @observable
-  editor = React.createRef();
+  editor = React.createRef<typeof Editor>();
 
   @observable
   isUploading = false;
@@ -86,7 +87,7 @@ class DocumentScene extends React.Component<Props> {
   isPublishing = false;
 
   @observable
-  isDirty = false;
+  isEditorDirty = false;
 
   @observable
   isEmpty = true;
@@ -112,12 +113,6 @@ class DocumentScene extends React.Component<Props> {
 
     if (this.props.readOnly || auth.team?.collaborativeEditing) {
       this.lastRevision = document.revision;
-    }
-
-    if (this.props.readOnly) {
-      if (document.title !== this.title) {
-        this.title = document.title;
-      }
     }
 
     if (
@@ -146,8 +141,6 @@ class DocumentScene extends React.Component<Props> {
   }
 
   replaceDocument = (template: Document | Revision) => {
-    this.title = template.title;
-    this.isDirty = true;
     const editorRef = this.editor.current;
 
     if (!editorRef) {
@@ -161,6 +154,8 @@ class DocumentScene extends React.Component<Props> {
         .setSelection(new AllSelection(view.state.doc))
         .replaceSelectionWith(parser.parse(template.text))
     );
+
+    this.isEditorDirty = true;
 
     if (template instanceof Document) {
       this.props.document.templateId = template.id;
@@ -192,8 +187,7 @@ class DocumentScene extends React.Component<Props> {
     }
   };
 
-  // @ts-expect-error ts-migrate(7006) FIXME: Parameter 'ev' implicitly has an 'any' type.
-  goToMove = (ev) => {
+  goToMove = (ev: KeyboardEvent) => {
     if (!this.props.readOnly) return;
     ev.preventDefault();
     const { document, abilities } = this.props;
@@ -203,8 +197,7 @@ class DocumentScene extends React.Component<Props> {
     }
   };
 
-  // @ts-expect-error ts-migrate(7006) FIXME: Parameter 'ev' implicitly has an 'any' type.
-  goToEdit = (ev) => {
+  goToEdit = (ev: KeyboardEvent) => {
     if (!this.props.readOnly) return;
     ev.preventDefault();
     const { document, abilities } = this.props;
@@ -214,8 +207,7 @@ class DocumentScene extends React.Component<Props> {
     }
   };
 
-  // @ts-expect-error ts-migrate(7006) FIXME: Parameter 'ev' implicitly has an 'any' type.
-  goToHistory = (ev) => {
+  goToHistory = (ev: KeyboardEvent) => {
     if (!this.props.readOnly) return;
     if (ev.ctrlKey) return;
     ev.preventDefault();
@@ -228,8 +220,7 @@ class DocumentScene extends React.Component<Props> {
     }
   };
 
-  // @ts-expect-error ts-migrate(7006) FIXME: Parameter 'ev' implicitly has an 'any' type.
-  onPublish = (ev) => {
+  onPublish = (ev: React.MouseEvent | KeyboardEvent) => {
     ev.preventDefault();
     const { document } = this.props;
     if (document.publishedAt) return;
@@ -239,8 +230,7 @@ class DocumentScene extends React.Component<Props> {
     });
   };
 
-  // @ts-expect-error ts-migrate(7006) FIXME: Parameter 'ev' implicitly has an 'any' type.
-  onToggleTableOfContents = (ev) => {
+  onToggleTableOfContents = (ev: KeyboardEvent) => {
     if (!this.props.readOnly) return;
     ev.preventDefault();
     const { ui } = this.props;
@@ -265,25 +255,18 @@ class DocumentScene extends React.Component<Props> {
 
     // get the latest version of the editor text value
     const text = this.getEditorText ? this.getEditorText() : document.text;
-    const title = this.title;
 
     // prevent save before anything has been written (single hash is empty doc)
-    // @ts-expect-error ts-migrate(2367) FIXME: This condition will always return 'false' since th... Remove this comment to see the full error message
-    if (text.trim() === "" && title.trim === "") return;
+    if (text.trim() === "" && document.title.trim() === "") return;
+
+    document.text = text;
+    document.tasks = getTasks(document.text);
 
     // prevent autosave if nothing has changed
-    if (
-      options.autosave &&
-      document.text.trim() === text.trim() &&
-      document.title.trim() === title.trim()
-    ) {
+    if (options.autosave && !this.isEditorDirty && !document.isDirty()) {
       return;
     }
 
-    document.title = title;
-    document.text = text;
-    document.tasks = getTasks(document.text);
-    const isNew = !document.id;
     this.isSaving = true;
     this.isPublishing = !!options.publish;
 
@@ -305,13 +288,13 @@ class DocumentScene extends React.Component<Props> {
         });
       }
 
-      this.isDirty = false;
+      this.isEditorDirty = false;
       this.lastRevision = savedDocument.revision;
 
       if (options.done) {
         this.props.history.push(savedDocument.url);
         this.props.ui.setActiveDocument(savedDocument);
-      } else if (isNew) {
+      } else if (document.isNew) {
         this.props.history.push(editDocumentUrl(savedDocument));
         this.props.ui.setActiveDocument(savedDocument);
       }
@@ -335,15 +318,13 @@ class DocumentScene extends React.Component<Props> {
   updateIsDirty = () => {
     const { document } = this.props;
     const editorText = this.getEditorText().trim();
-    const titleChanged = this.title !== document.title;
-    const bodyChanged = editorText !== document.text.trim();
+    this.isEditorDirty = editorText !== document.text.trim();
 
     // a single hash is a doc with just an empty title
     this.isEmpty = (!editorText || editorText === "#") && !this.title;
-    this.isDirty = bodyChanged || titleChanged;
   };
 
-  updateIsDirtyDebounced = debounce(this.updateIsDirty, IS_DIRTY_DELAY);
+  updateIsDirtyDebounced = debounce(this.updateIsDirty, 500);
 
   onImageUploadStart = () => {
     this.isUploading = true;
@@ -381,11 +362,11 @@ class DocumentScene extends React.Component<Props> {
     }
   };
 
-  onChangeTitle = (value: string) => {
-    this.title = value;
-    this.updateIsDirtyDebounced();
+  onChangeTitle = action((value: string) => {
+    this.props.document.title = value;
+    this.updateIsDirty();
     this.autosave();
-  };
+  });
 
   goBack = () => {
     this.props.history.push(this.props.document.url);
@@ -420,8 +401,15 @@ class DocumentScene extends React.Component<Props> {
       !revision &&
       !isShare;
 
+    const canonicalUrl = shareId
+      ? this.props.match.url
+      : updateDocumentUrl(this.props.match.url, document);
+
     return (
       <ErrorBoundary>
+        {this.props.location.pathname !== canonicalUrl && (
+          <Redirect to={canonicalUrl} />
+        )}
         <RegisterKeyDown trigger="m" handler={this.goToMove} />
         <RegisterKeyDown trigger="e" handler={this.goToEdit} />
         <RegisterKeyDown trigger="Escape" handler={this.goBack} />
@@ -468,7 +456,7 @@ class DocumentScene extends React.Component<Props> {
               <>
                 <Prompt
                   when={
-                    this.isDirty &&
+                    this.isEditorDirty &&
                     !this.isUploading &&
                     !team?.collaborativeEditing
                   }
@@ -477,7 +465,7 @@ class DocumentScene extends React.Component<Props> {
                   )}
                 />
                 <Prompt
-                  when={this.isUploading && !this.isDirty}
+                  when={this.isUploading && !this.isEditorDirty}
                   message={t(
                     `Images are still uploading.\nAre you sure you want to discard them?`
                   )}
@@ -505,6 +493,7 @@ class DocumentScene extends React.Component<Props> {
               archived={document.isArchived}
               showContents={showContents}
               isEditing={!readOnly}
+              isFullWidth={document.fullWidth}
               column
               auto
             >
@@ -556,7 +545,12 @@ class DocumentScene extends React.Component<Props> {
               )}
               <React.Suspense fallback={<PlaceholderDocument />}>
                 <Flex auto={!readOnly}>
-                  {showContents && <Contents headings={headings} />}
+                  {showContents && (
+                    <Contents
+                      headings={headings}
+                      isFullWidth={document.fullWidth}
+                    />
+                  )}
                   <Editor
                     id={document.id}
                     key={disableEmbeds ? "disabled" : "enabled"}
@@ -565,7 +559,7 @@ class DocumentScene extends React.Component<Props> {
                     shareId={shareId}
                     isDraft={document.isDraft}
                     template={document.isTemplate}
-                    title={revision ? revision.title : this.title}
+                    title={revision ? revision.title : document.title}
                     document={document}
                     value={readOnly ? value : undefined}
                     defaultValue={value}
@@ -582,7 +576,6 @@ class DocumentScene extends React.Component<Props> {
                     onCancel={this.goBack}
                     readOnly={readOnly}
                     readOnlyWriteCheckboxes={readOnly && abilities.update}
-                    ui={this.props.ui}
                   >
                     {shareId && (
                       <ReferencesWrapper isOnlyTitle={document.isOnlyTitle}>
@@ -639,30 +632,34 @@ const ReferencesWrapper = styled.div<{ isOnlyTitle?: boolean }>`
   }
 `;
 
-const MaxWidth = styled(Flex)<{
+type MaxWidthProps = {
   isEditing?: boolean;
+  isFullWidth?: boolean;
   archived?: boolean;
   showContents?: boolean;
-}>`
+};
+
+const MaxWidth = styled(Flex)<MaxWidthProps>`
   ${(props) =>
     props.archived && `* { color: ${props.theme.textSecondary} !important; } `};
 
-  // Adds space to the left gutter to make room for heading annotations on mobile
-  padding: ${(props) => (props.isEditing ? "0 12px 0 32px" : "0 12px")};
+  // Adds space to the gutter to make room for heading annotations
+  padding: 0 32px;
   transition: padding 100ms;
-
   max-width: 100vw;
   width: 100%;
 
   ${breakpoint("tablet")`
-    padding: 0 24px;
     margin: 4px auto 12px;
-    max-width: calc(48px + ${(props: any) =>
-      props.showContents ? "64em" : "46em"});
+    max-width: ${(props: MaxWidthProps) =>
+      props.isFullWidth
+        ? "100vw"
+        : `calc(64px + 46em + ${props.showContents ? "256px" : "0px"});`}
   `};
 
   ${breakpoint("desktopLarge")`
-    max-width: calc(48px + 52em);
+    max-width: ${(props: MaxWidthProps) =>
+      props.isFullWidth ? "100vw" : `calc(64px + 52em);`}
   `};
 `;
 

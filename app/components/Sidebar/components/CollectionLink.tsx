@@ -5,6 +5,7 @@ import { useDrop, useDrag } from "react-dnd";
 import { useTranslation } from "react-i18next";
 import { useLocation, useHistory } from "react-router-dom";
 import styled from "styled-components";
+import { sortNavigationNodes } from "@shared/utils/collections";
 import Collection from "~/models/Collection";
 import Document from "~/models/Document";
 import DocumentReparent from "~/scenes/DocumentReparent";
@@ -25,7 +26,7 @@ type Props = {
   collection: Collection;
   canUpdate: boolean;
   activeDocument: Document | null | undefined;
-  prefetchDocument: (id: string) => Promise<any>;
+  prefetchDocument: (id: string) => Promise<Document | void>;
   belowCollection: Collection | void;
 };
 
@@ -48,6 +49,7 @@ function CollectionLink({
   const itemRef = React.useRef<
     NavigationNode & { depth: number; active: boolean; collectionId: string }
   >();
+  const [isEditing, setIsEditing] = React.useState(false);
 
   const handleTitleChange = React.useCallback(
     async (name: string) => {
@@ -58,6 +60,10 @@ function CollectionLink({
     },
     [collection, history]
   );
+
+  const handleTitleEditing = React.useCallback((isEditing: boolean) => {
+    setIsEditing(isEditing);
+  }, []);
 
   const { ui, documents, policies, collections } = useStores();
   const [expanded, setExpanded] = React.useState(
@@ -152,6 +158,31 @@ function CollectionLink({
     },
   });
 
+  const collectionDocuments = React.useMemo(() => {
+    if (
+      activeDocument?.isActive &&
+      activeDocument?.isDraft &&
+      activeDocument?.collectionId === collection.id &&
+      !activeDocument?.parentDocumentId
+    ) {
+      return sortNavigationNodes(
+        [activeDocument.asNavigationNode, ...collection.documents],
+        collection.sort
+      );
+    }
+
+    return collection.documents;
+  }, [
+    activeDocument?.isActive,
+    activeDocument?.isDraft,
+    activeDocument?.collectionId,
+    activeDocument?.parentDocumentId,
+    activeDocument?.asNavigationNode,
+    collection.documents,
+    collection.id,
+    collection.sort,
+  ]);
+
   const isDraggingAnyCollection =
     isDraggingAnotherCollection || isCollectionDragging;
 
@@ -184,37 +215,40 @@ function CollectionLink({
           $isMoving={isCollectionDragging}
         >
           <DropToImport collectionId={collection.id}>
-            <SidebarLinkWithPadding
+            <SidebarLink
               to={collection.url}
               icon={
                 <CollectionIcon collection={collection} expanded={expanded} />
               }
-              showActions={menuOpen || expanded}
+              showActions={menuOpen}
               isActiveDrop={isOver && canDrop}
               label={
                 <EditableTitle
                   title={collection.name}
                   onSubmit={handleTitleChange}
+                  onEditing={handleTitleEditing}
                   canUpdate={canUpdate}
                 />
               }
               exact={false}
               depth={0.5}
               menu={
-                <>
-                  {can.update && (
-                    <CollectionSortMenuWithMargin
+                !isEditing && (
+                  <>
+                    {can.update && (
+                      <CollectionSortMenuWithMargin
+                        collection={collection}
+                        onOpen={handleMenuOpen}
+                        onClose={handleMenuClose}
+                      />
+                    )}
+                    <CollectionMenu
                       collection={collection}
                       onOpen={handleMenuOpen}
                       onClose={handleMenuClose}
                     />
-                  )}
-                  <CollectionMenu
-                    collection={collection}
-                    onOpen={handleMenuOpen}
-                    onClose={handleMenuClose}
-                  />
-                </>
+                  </>
+                )
               }
             />
           </DropToImport>
@@ -229,9 +263,8 @@ function CollectionLink({
           />
         )}
       </div>
-
       {expanded &&
-        collection.documents.map((node, index) => (
+        collectionDocuments.map((node, index) => (
           <DocumentLink
             key={node.id}
             node={node}
@@ -239,6 +272,7 @@ function CollectionLink({
             activeDocument={activeDocument}
             prefetchDocument={prefetchDocument}
             canUpdate={canUpdate}
+            isDraft={node.isDraft}
             depth={2}
             index={index}
           />
@@ -264,10 +298,6 @@ function CollectionLink({
 const Draggable = styled("div")<{ $isDragging: boolean; $isMoving: boolean }>`
   opacity: ${(props) => (props.$isDragging || props.$isMoving ? 0.5 : 1)};
   pointer-events: ${(props) => (props.$isMoving ? "none" : "auto")};
-`;
-
-const SidebarLinkWithPadding = styled(SidebarLink)`
-  padding-right: 60px;
 `;
 
 const CollectionSortMenuWithMargin = styled(CollectionSortMenu)`
