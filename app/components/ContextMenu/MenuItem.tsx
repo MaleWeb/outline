@@ -6,20 +6,20 @@ import breakpoint from "styled-components-breakpoint";
 import MenuIconWrapper from "../MenuIconWrapper";
 
 type Props = {
-  onClick?: (arg0: React.SyntheticEvent) => void | Promise<void>;
-  children?: React.ReactNode;
+  onClick?: (event: React.SyntheticEvent) => void | Promise<void>;
   selected?: boolean;
   disabled?: boolean;
+  dangerous?: boolean;
   to?: string;
   href?: string;
   target?: "_blank";
   as?: string | React.ComponentType<any>;
   hide?: () => void;
   level?: number;
-  icon?: React.ReactNode;
+  icon?: React.ReactElement;
 };
 
-const MenuItem = ({
+const MenuItem: React.FC<Props> = ({
   onClick,
   children,
   selected,
@@ -28,7 +28,7 @@ const MenuItem = ({
   hide,
   icon,
   ...rest
-}: Props) => {
+}) => {
   const handleClick = React.useCallback(
     (ev) => {
       if (onClick) {
@@ -73,7 +73,11 @@ const MenuItem = ({
               &nbsp;
             </>
           )}
-          {icon && <MenuIconWrapper>{icon}</MenuIconWrapper>}
+          {icon && (
+            <MenuIconWrapper>
+              {React.cloneElement(icon, { color: "currentColor" })}
+            </MenuIconWrapper>
+          )}
           {children}
         </MenuAnchor>
       )}
@@ -87,7 +91,14 @@ const Spacer = styled.svg`
   flex-shrink: 0;
 `;
 
-export const MenuAnchorCSS = css<{ level?: number; disabled?: boolean }>`
+type MenuAnchorProps = {
+  level?: number;
+  disabled?: boolean;
+  dangerous?: boolean;
+  disclosure?: boolean;
+};
+
+export const MenuAnchorCSS = css<MenuAnchorProps>`
   display: flex;
   margin: 0;
   border: 0;
@@ -103,6 +114,8 @@ export const MenuAnchorCSS = css<{ level?: number; disabled?: boolean }>`
   font-size: 16px;
   cursor: default;
   user-select: none;
+  white-space: nowrap;
+  position: relative;
 
   svg:not(:last-child) {
     margin-right: 4px;
@@ -118,22 +131,26 @@ export const MenuAnchorCSS = css<{ level?: number; disabled?: boolean }>`
       ? "pointer-events: none;"
       : `
 
-  &:hover,  
-  &:focus,
-  &.focus-visible {
-    color: ${props.theme.white};
-    background: ${props.theme.primary};
-    box-shadow: none;
-    cursor: pointer;
+  @media (hover: hover) {
+    &:hover,
+    &:focus,
+    &.focus-visible {
+      color: ${props.theme.white};
+      background: ${props.dangerous ? props.theme.danger : props.theme.primary};
+      box-shadow: none;
+      cursor: pointer;
 
-    svg {
-      fill: ${props.theme.white};
+      svg {
+        fill: ${props.theme.white};
+      }
     }
   }
   `};
 
   ${breakpoint("tablet")`
     padding: 4px 12px;
+    padding-right: ${(props: MenuAnchorProps) =>
+      props.disclosure ? 32 : 12}px;
     font-size: 14px;
   `};
 `;

@@ -21,6 +21,7 @@ import DocumentBreadcrumb from "~/components/DocumentBreadcrumb";
 import Header from "~/components/Header";
 import Tooltip from "~/components/Tooltip";
 import useMobile from "~/hooks/useMobile";
+import usePolicy from "~/hooks/usePolicy";
 import useStores from "~/hooks/useStores";
 import DocumentMenu from "~/menus/DocumentMenu";
 import NewChildDocumentMenu from "~/menus/NewChildDocumentMenu";
@@ -35,6 +36,7 @@ import ShareButton from "./ShareButton";
 
 type Props = {
   document: Document;
+  documentHasHeadings: boolean;
   sharedTree: NavigationNode | undefined;
   shareId: string | null | undefined;
   isDraft: boolean;
@@ -59,6 +61,7 @@ type Props = {
 
 function DocumentHeader({
   document,
+  documentHasHeadings,
   shareId,
   isEditing,
   isDraft,
@@ -73,10 +76,15 @@ function DocumentHeader({
   headings,
 }: Props) {
   const { t } = useTranslation();
-  const { ui, policies, auth } = useStores();
+  const { ui, auth } = useStores();
   const { resolvedTheme } = ui;
   const { team } = auth;
   const isMobile = useMobile();
+
+  // We cache this value for as long as the component is mounted so that if you
+  // apply a template there is still the option to replace it until the user
+  // navigates away from the doc
+  const [isNew] = React.useState(document.isPersistedOnce);
 
   const handleSave = React.useCallback(() => {
     onSave({
@@ -91,9 +99,8 @@ function DocumentHeader({
     });
   }, [onSave]);
 
-  const isNew = document.isPersistedOnce;
-  const isTemplate = document.isTemplate;
-  const can = policies.abilities(document.id);
+  const { isDeleted, isTemplate } = document;
+  const can = usePolicy(document.id);
   const canToggleEmbeds = team?.documentEmbeds;
   const canEdit = can.update && !isEditing;
   const toc = (
@@ -160,14 +167,19 @@ function DocumentHeader({
     return (
       <Header
         title={document.title}
+        hasSidebar={!!sharedTree}
         breadcrumb={
-          <PublicBreadcrumb
-            documentId={document.id}
-            shareId={shareId}
-            sharedTree={sharedTree}
-          >
-            {toc}
-          </PublicBreadcrumb>
+          isMobile ? (
+            <TableOfContentsMenu headings={headings} />
+          ) : (
+            <PublicBreadcrumb
+              documentId={document.id}
+              shareId={shareId}
+              sharedTree={sharedTree}
+            >
+              {documentHasHeadings ? toc : null}
+            </PublicBreadcrumb>
+          )
         }
         actions={
           <>
@@ -182,10 +194,15 @@ function DocumentHeader({
   return (
     <>
       <Header
+        hasSidebar
         breadcrumb={
-          <DocumentBreadcrumb document={document}>
-            {!isEditing && toc}
-          </DocumentBreadcrumb>
+          isMobile ? (
+            <TableOfContentsMenu headings={headings} />
+          ) : (
+            <DocumentBreadcrumb document={document}>
+              {!isEditing && toc}
+            </DocumentBreadcrumb>
+          )
         }
         title={
           <>
@@ -196,16 +213,12 @@ function DocumentHeader({
         actions={
           <>
             <ObservingBanner />
-            {isMobile && (
-              <TocWrapper>
-                <TableOfContentsMenu headings={headings} />
-              </TocWrapper>
-            )}
+
             {!isPublishing && isSaving && !team?.collaborativeEditing && (
               <Status>{t("Saving")}…</Status>
             )}
-            <Collaborators document={document} />
-            {isEditing && !isTemplate && isNew && (
+            {!isDeleted && <Collaborators document={document} />}
+            {(isEditing || team?.collaborativeEditing) && !isTemplate && isNew && (
               <Action>
                 <TemplatesMenu
                   document={document}
@@ -213,7 +226,7 @@ function DocumentHeader({
                 />
               </Action>
             )}
-            {!isEditing && (!isMobile || !isTemplate) && (
+            {!isEditing && !isDeleted && (!isMobile || !isTemplate) && (
               <Action>
                 <ShareButton document={document} />
               </Action>
@@ -291,7 +304,7 @@ function DocumentHeader({
             )}
             {!isEditing && (
               <>
-                <Separator />
+                {!isDeleted && <Separator />}
                 <Action>
                   <DocumentMenu
                     document={document}
@@ -322,11 +335,6 @@ const Status = styled(Action)`
   padding-left: 0;
   padding-right: 4px;
   color: ${(props) => props.theme.slate};
-`;
-
-const TocWrapper = styled(Action)`
-  position: absolute;
-  left: 42px;
 `;
 
 export default observer(DocumentHeader);

@@ -6,8 +6,10 @@ import { useTranslation } from "react-i18next";
 import { useTable, useSortBy, usePagination } from "react-table";
 import styled from "styled-components";
 import Button from "~/components/Button";
+import DelayedMount from "~/components/DelayedMount";
 import Empty from "~/components/Empty";
 import Flex from "~/components/Flex";
+import NudeButton from "~/components/NudeButton";
 import PlaceholderText from "~/components/PlaceholderText";
 
 export type Props = {
@@ -51,15 +53,10 @@ function Table({
     headerGroups,
     rows,
     prepareRow,
-    // @ts-expect-error ts-migrate(2339) FIXME: Property 'canNextPage' does not exist on type 'Tab... Remove this comment to see the full error message
     canNextPage,
-    // @ts-expect-error ts-migrate(2339) FIXME: Property 'nextPage' does not exist on type 'TableI... Remove this comment to see the full error message
     nextPage,
-    // @ts-expect-error ts-migrate(2339) FIXME: Property 'canPreviousPage' does not exist on type ... Remove this comment to see the full error message
     canPreviousPage,
-    // @ts-expect-error ts-migrate(2339) FIXME: Property 'previousPage' does not exist on type 'Ta... Remove this comment to see the full error message
     previousPage,
-    // @ts-expect-error ts-migrate(2339) FIXME: Property 'pageIndex' does not exist on type 'Table... Remove this comment to see the full error message
     state: { pageIndex, sortBy },
   } = useTable(
     {
@@ -71,7 +68,6 @@ function Table({
       autoResetPage: false,
       pageCount: totalPages,
       initialState: {
-        // @ts-expect-error ts-migrate(2322) FIXME: Type '{ sortBy: { id: string; desc: boolean; }[]; ... Remove this comment to see the full error message
         sortBy: [
           {
             id: defaultSort,
@@ -82,7 +78,6 @@ function Table({
         pageIndex: page,
       },
       stateReducer: (newState, action, prevState) => {
-        // @ts-expect-error ts-migrate(2339) FIXME: Property 'sortBy' does not exist on type 'TableSta... Remove this comment to see the full error message
         if (!isEqual(newState.sortBy, prevState.sortBy)) {
           return { ...newState, pageIndex: 0 };
         }
@@ -127,20 +122,19 @@ function Table({
           {headerGroups.map((headerGroup) => (
             <tr {...headerGroup.getHeaderGroupProps()}>
               {headerGroup.headers.map((column) => (
-                // @ts-expect-error ts-migrate(2339) FIXME: Property 'getSortByToggleProps' does not exist on ... Remove this comment to see the full error message
                 <Head {...column.getHeaderProps(column.getSortByToggleProps())}>
-                  <SortWrapper align="center" gap={4}>
+                  <SortWrapper
+                    align="center"
+                    $sortable={!column.disableSortBy}
+                    gap={4}
+                  >
                     {column.render("Header")}
-                    {
-                      // @ts-expect-error known issue: https://github.com/tannerlinsley/react-table/issues/2970
-                      column.isSorted &&
-                        // @ts-expect-error ts-migrate(2339) FIXME: Property 'isSortedDesc' does not exist on type 'He... Remove this comment to see the full error message
-                        (column.isSortedDesc ? (
-                          <DescSortIcon />
-                        ) : (
-                          <AscSortIcon />
-                        ))
-                    }
+                    {column.isSorted &&
+                      (column.isSortedDesc ? (
+                        <DescSortIcon />
+                      ) : (
+                        <AscSortIcon />
+                      ))}
                   </SortWrapper>
                 </Head>
               ))}
@@ -202,17 +196,19 @@ export const Placeholder = ({
   rows?: number;
 }) => {
   return (
-    <tbody>
-      {new Array(rows).fill(1).map((_, row) => (
-        <Row key={row}>
-          {new Array(columns).fill(1).map((_, col) => (
-            <Cell key={col}>
-              <PlaceholderText minWidth={25} maxWidth={75} />
-            </Cell>
-          ))}
-        </Row>
-      ))}
-    </tbody>
+    <DelayedMount>
+      <tbody>
+        {new Array(rows).fill(1).map((_, row) => (
+          <Row key={row}>
+            {new Array(columns).fill(1).map((_, col) => (
+              <Cell key={col}>
+                <PlaceholderText minWidth={25} maxWidth={75} />
+              </Cell>
+            ))}
+          </Row>
+        ))}
+      </tbody>
+    </DelayedMount>
   );
 };
 
@@ -226,6 +222,8 @@ const Pagination = styled(Flex)`
 `;
 
 const DescSortIcon = styled(CollapsedIcon)`
+  margin-left: -2px;
+
   &:hover {
     fill: ${(props) => props.theme.text};
   }
@@ -241,12 +239,23 @@ const InnerTable = styled.table`
   width: 100%;
 `;
 
-const SortWrapper = styled(Flex)`
+const SortWrapper = styled(Flex)<{ $sortable: boolean }>`
+  display: inline-flex;
   height: 24px;
+  user-select: none;
+  border-radius: 4px;
+  white-space: nowrap;
+  margin: 0 -4px;
+  padding: 0 4px;
+
+  &:hover {
+    background: ${(props) =>
+      props.$sortable ? props.theme.secondaryBackground : "none"};
+  }
 `;
 
 const Cell = styled.td`
-  padding: 6px;
+  padding: 10px 6px;
   border-bottom: 1px solid ${(props) => props.theme.divider};
   font-size: 14px;
 
@@ -259,6 +268,13 @@ const Cell = styled.td`
   &.right-aligned {
     text-align: right;
     vertical-align: bottom;
+  }
+
+  ${NudeButton} {
+    &:hover,
+    &[aria-expanded="true"] {
+      background: ${(props) => props.theme.sidebarControlHoverBackground};
+    }
   }
 `;
 
@@ -282,7 +298,7 @@ const Head = styled.th`
   text-align: left;
   position: sticky;
   top: 54px;
-  padding: 6px;
+  padding: 6px 6px 0;
   border-bottom: 1px solid ${(props) => props.theme.divider};
   background: ${(props) => props.theme.background};
   transition: ${(props) => props.theme.backgroundTransition};

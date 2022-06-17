@@ -1,14 +1,19 @@
+import fs from "fs-extra";
+import invariant from "invariant";
 import Router from "koa-router";
-import Sequelize from "sequelize";
+import { Op, ScopeOptions, WhereOptions } from "sequelize";
 import { subtractDate } from "@shared/utils/date";
 import documentCreator from "@server/commands/documentCreator";
 import documentImporter from "@server/commands/documentImporter";
+import documentLoader from "@server/commands/documentLoader";
 import documentMover from "@server/commands/documentMover";
 import documentPermanentDeleter from "@server/commands/documentPermanentDeleter";
+import documentUpdater from "@server/commands/documentUpdater";
+import { sequelize } from "@server/database/sequelize";
 import {
   NotFoundError,
   InvalidRequestError,
-  AuthorizationError,
+  AuthenticationError,
 } from "@server/errors";
 import auth from "@server/middlewares/authentication";
 import {
@@ -18,31 +23,28 @@ import {
   Event,
   Revision,
   SearchQuery,
-  Share,
   Star,
   User,
   View,
   Team,
 } from "@server/models";
-import policy from "@server/policies";
+import { authorize, cannot } from "@server/policies";
 import {
   presentCollection,
   presentDocument,
   presentPolicies,
 } from "@server/presenters";
-import { sequelize } from "@server/sequelize";
 import {
   assertUuid,
   assertSort,
   assertIn,
   assertPresent,
   assertPositiveInteger,
+  assertNotEmpty,
 } from "@server/validation";
 import env from "../../env";
 import pagination from "./middlewares/pagination";
 
-const Op = Sequelize.Op;
-const { authorize, cannot, can } = policy;
 const router = new Router();
 
 router.post("documents.list", auth(), pagination(), async (ctx) => {
@@ -52,18 +54,19 @@ router.post("documents.list", auth(), pagination(), async (ctx) => {
   const collectionId = ctx.body.collectionId || ctx.body.collection;
   const createdById = ctx.body.userId || ctx.body.user;
   let direction = ctx.body.direction;
-  if (direction !== "ASC") direction = "DESC";
+  if (direction !== "ASC") {
+    direction = "DESC";
+  }
   // always filter by the current team
-  const user = ctx.state.user;
-  let where = {
+  const { user } = ctx.state;
+  let where: WhereOptions<Document> = {
     teamId: user.teamId,
     archivedAt: {
-      [Op.eq]: null,
+      [Op.is]: null,
     },
   };
 
   if (template) {
-    // @ts-expect-error ts-migrate(2322) FIXME: Type '{ template: boolean; teamId: any; archivedAt... Remove this comment to see the full error message
     where = { ...where, template: true };
   }
 
@@ -71,17 +74,14 @@ router.post("documents.list", auth(), pagination(), async (ctx) => {
   // exist in the team then nothing will be returned, so no need to check auth
   if (createdById) {
     assertUuid(createdById, "user must be a UUID");
-    // @ts-expect-error ts-migrate(2322) FIXME: Type '{ createdById: any; teamId: any; archivedAt:... Remove this comment to see the full error message
     where = { ...where, createdById };
   }
 
-  // @ts-expect-error ts-migrate(7034) FIXME: Variable 'documentIds' implicitly has type 'any[]'... Remove this comment to see the full error message
-  let documentIds = [];
+  let documentIds: string[] = [];
 
   // if a specific collection is passed then we need to check auth to view it
   if (collectionId) {
     assertUuid(collectionId, "collection must be a UUID");
-    // @ts-expect-error ts-migrate(2322) FIXME: Type '{ collectionId: any; teamId: any; archivedAt... Remove this comment to see the full error message
     where = { ...where, collectionId };
     const collection = await Collection.scope({
       method: ["withMembership", user.id],
@@ -91,22 +91,18 @@ router.post("documents.list", auth(), pagination(), async (ctx) => {
     // index sort is special because it uses the order of the documents in the
     // collection.documentStructure rather than a database column
     if (sort === "index") {
-      documentIds = (collection.documentStructure || [])
-        // @ts-expect-error ts-migrate(7006) FIXME: Parameter 'node' implicitly has an 'any' type.
+      documentIds = (collection?.documentStructure || [])
         .map((node) => node.id)
         .slice(ctx.state.pagination.offset, ctx.state.pagination.limit);
-      // @ts-expect-error ts-migrate(2322) FIXME: Type '{ id: any; teamId: any; archivedAt: { [Seque... Remove this comment to see the full error message
       where = { ...where, id: documentIds };
     } // otherwise, filter by all collections the user has access to
   } else {
     const collectionIds = await user.collectionIds();
-    // @ts-expect-error ts-migrate(2322) FIXME: Type '{ collectionId: any; teamId: any; archivedAt... Remove this comment to see the full error message
     where = { ...where, collectionId: collectionIds };
   }
 
   if (parentDocumentId) {
     assertUuid(parentDocumentId, "parentDocumentId must be a UUID");
-    // @ts-expect-error ts-migrate(2322) FIXME: Type '{ parentDocumentId: any; teamId: any; archiv... Remove this comment to see the full error message
     where = { ...where, parentDocumentId };
   }
 
@@ -115,9 +111,8 @@ router.post("documents.list", auth(), pagination(), async (ctx) => {
   if (parentDocumentId === null) {
     where = {
       ...where,
-      // @ts-expect-error ts-migrate(2322) FIXME: Type '{ parentDocumentId: { [Sequelize.Op.eq]: nul... Remove this comment to see the full error message
       parentDocumentId: {
-        [Op.eq]: null,
+        [Op.is]: null,
       },
     };
   }
@@ -132,7 +127,6 @@ router.post("documents.list", auth(), pagination(), async (ctx) => {
     });
     where = {
       ...where,
-      // @ts-expect-error ts-migrate(2322) FIXME: Type '{ id: any; teamId: any; archivedAt: { [Seque... Remove this comment to see the full error message
       id: backlinks.map((backlink) => backlink.reverseDocumentId),
     };
   }
@@ -154,13 +148,11 @@ router.post("documents.list", auth(), pagination(), async (ctx) => {
   // collection.documentStructure rather than a database column
   if (documentIds.length) {
     documents.sort(
-      // @ts-expect-error ts-migrate(7006) FIXME: Parameter 'a' implicitly has an 'any' type.
       (a, b) => documentIds.indexOf(a.id) - documentIds.indexOf(b.id)
     );
   }
 
   const data = await Promise.all(
-    // @ts-expect-error ts-migrate(7006) FIXME: Parameter 'document' implicitly has an 'any' type.
     documents.map((document) => presentDocument(document))
   );
   const policies = presentPolicies(user, documents);
@@ -176,20 +168,22 @@ router.post("documents.archived", auth(), pagination(), async (ctx) => {
 
   assertSort(sort, Document);
   let direction = ctx.body.direction;
-  if (direction !== "ASC") direction = "DESC";
-  const user = ctx.state.user;
+  if (direction !== "ASC") {
+    direction = "DESC";
+  }
+  const { user } = ctx.state;
   const collectionIds = await user.collectionIds();
-  const collectionScope = {
-    method: ["withCollection", user.id],
+  const collectionScope: Readonly<ScopeOptions> = {
+    method: ["withCollectionPermissions", user.id],
   };
-  const viewScope = {
+  const viewScope: Readonly<ScopeOptions> = {
     method: ["withViews", user.id],
   };
-  const documents = await Document.scope(
+  const documents = await Document.scope([
     "defaultScope",
     collectionScope,
-    viewScope
-  ).findAll({
+    viewScope,
+  ]).findAll({
     where: {
       teamId: user.teamId,
       collectionId: collectionIds,
@@ -202,10 +196,10 @@ router.post("documents.archived", auth(), pagination(), async (ctx) => {
     limit: ctx.state.pagination.limit,
   });
   const data = await Promise.all(
-    // @ts-expect-error ts-migrate(7006) FIXME: Parameter 'document' implicitly has an 'any' type.
     documents.map((document) => presentDocument(document))
   );
   const policies = presentPolicies(user, documents);
+
   ctx.body = {
     pagination: ctx.state.pagination,
     data,
@@ -218,18 +212,20 @@ router.post("documents.deleted", auth(), pagination(), async (ctx) => {
 
   assertSort(sort, Document);
   let direction = ctx.body.direction;
-  if (direction !== "ASC") direction = "DESC";
-  const user = ctx.state.user;
+  if (direction !== "ASC") {
+    direction = "DESC";
+  }
+  const { user } = ctx.state;
   const collectionIds = await user.collectionIds({
     paranoid: false,
   });
-  const collectionScope = {
-    method: ["withCollection", user.id],
+  const collectionScope: Readonly<ScopeOptions> = {
+    method: ["withCollectionPermissions", user.id],
   };
-  const viewScope = {
+  const viewScope: Readonly<ScopeOptions> = {
     method: ["withViews", user.id],
   };
-  const documents = await Document.scope(collectionScope, viewScope).findAll({
+  const documents = await Document.scope([collectionScope, viewScope]).findAll({
     where: {
       teamId: user.teamId,
       collectionId: collectionIds,
@@ -255,10 +251,10 @@ router.post("documents.deleted", auth(), pagination(), async (ctx) => {
     limit: ctx.state.pagination.limit,
   });
   const data = await Promise.all(
-    // @ts-expect-error ts-migrate(7006) FIXME: Parameter 'document' implicitly has an 'any' type.
     documents.map((document) => presentDocument(document))
   );
   const policies = presentPolicies(user, documents);
+
   ctx.body = {
     pagination: ctx.state.pagination,
     data,
@@ -271,8 +267,10 @@ router.post("documents.viewed", auth(), pagination(), async (ctx) => {
   const { sort = "updatedAt" } = ctx.body;
 
   assertSort(sort, Document);
-  if (direction !== "ASC") direction = "DESC";
-  const user = ctx.state.user;
+  if (direction !== "ASC") {
+    direction = "DESC";
+  }
+  const { user } = ctx.state;
   const collectionIds = await user.collectionIds();
   const userId = user.id;
   const views = await View.findAll({
@@ -289,15 +287,6 @@ router.post("documents.viewed", auth(), pagination(), async (ctx) => {
         },
         include: [
           {
-            model: Star,
-            as: "starred",
-            where: {
-              userId,
-            },
-            separate: true,
-            required: false,
-          },
-          {
             model: Collection.scope({
               method: ["withMembership", userId],
             }),
@@ -309,70 +298,16 @@ router.post("documents.viewed", auth(), pagination(), async (ctx) => {
     offset: ctx.state.pagination.offset,
     limit: ctx.state.pagination.limit,
   });
-  // @ts-expect-error ts-migrate(7006) FIXME: Parameter 'view' implicitly has an 'any' type.
   const documents = views.map((view) => {
     const document = view.document;
     document.views = [view];
     return document;
   });
   const data = await Promise.all(
-    // @ts-expect-error ts-migrate(7006) FIXME: Parameter 'document' implicitly has an 'any' type.
     documents.map((document) => presentDocument(document))
   );
   const policies = presentPolicies(user, documents);
-  ctx.body = {
-    pagination: ctx.state.pagination,
-    data,
-    policies,
-  };
-});
 
-router.post("documents.starred", auth(), pagination(), async (ctx) => {
-  let { direction } = ctx.body;
-  const { sort = "updatedAt" } = ctx.body;
-
-  assertSort(sort, Document);
-  if (direction !== "ASC") direction = "DESC";
-  const user = ctx.state.user;
-  const collectionIds = await user.collectionIds();
-  const stars = await Star.findAll({
-    where: {
-      userId: user.id,
-    },
-    order: [[sort, direction]],
-    include: [
-      {
-        model: Document,
-        where: {
-          collectionId: collectionIds,
-        },
-        include: [
-          {
-            model: Collection.scope({
-              method: ["withMembership", user.id],
-            }),
-            as: "collection",
-          },
-          {
-            model: Star,
-            as: "starred",
-            where: {
-              userId: user.id,
-            },
-          },
-        ],
-      },
-    ],
-    offset: ctx.state.pagination.offset,
-    limit: ctx.state.pagination.limit,
-  });
-  // @ts-expect-error ts-migrate(7006) FIXME: Parameter 'star' implicitly has an 'any' type.
-  const documents = stars.map((star) => star.document);
-  const data = await Promise.all(
-    // @ts-expect-error ts-migrate(7006) FIXME: Parameter 'document' implicitly has an 'any' type.
-    documents.map((document) => presentDocument(document))
-  );
-  const policies = presentPolicies(user, documents);
   ctx.body = {
     pagination: ctx.state.pagination,
     data,
@@ -385,8 +320,10 @@ router.post("documents.drafts", auth(), pagination(), async (ctx) => {
   const { collectionId, dateFilter, sort = "updatedAt" } = ctx.body;
 
   assertSort(sort, Document);
-  if (direction !== "ASC") direction = "DESC";
-  const user = ctx.state.user;
+  if (direction !== "ASC") {
+    direction = "DESC";
+  }
+  const { user } = ctx.state;
 
   if (collectionId) {
     assertUuid(collectionId, "collectionId must be a UUID");
@@ -399,13 +336,12 @@ router.post("documents.drafts", auth(), pagination(), async (ctx) => {
   const collectionIds = collectionId
     ? [collectionId]
     : await user.collectionIds();
-  const whereConditions = {
-    userId: user.id,
+  const where: WhereOptions<Document> = {
+    createdById: user.id,
     collectionId: collectionIds,
     publishedAt: {
-      [Op.eq]: null,
+      [Op.is]: null,
     },
-    updatedAt: undefined,
   };
 
   if (dateFilter) {
@@ -414,187 +350,36 @@ router.post("documents.drafts", auth(), pagination(), async (ctx) => {
       ["day", "week", "month", "year"],
       "dateFilter must be one of day,week,month,year"
     );
-    // @ts-expect-error ts-migrate(2322) FIXME: Type '{ [Sequelize.Op.gte]: Date; }' is not assign... Remove this comment to see the full error message
-    whereConditions.updatedAt = {
+    where.updatedAt = {
       [Op.gte]: subtractDate(new Date(), dateFilter),
     };
   } else {
-    delete whereConditions.updatedAt;
+    delete where.updatedAt;
   }
 
-  const collectionScope = {
-    method: ["withCollection", user.id],
+  const collectionScope: Readonly<ScopeOptions> = {
+    method: ["withCollectionPermissions", user.id],
   };
-  const documents = await Document.scope(
+  const documents = await Document.scope([
     "defaultScope",
-    collectionScope
-  ).findAll({
-    where: whereConditions,
+    collectionScope,
+  ]).findAll({
+    where,
     order: [[sort, direction]],
     offset: ctx.state.pagination.offset,
     limit: ctx.state.pagination.limit,
   });
   const data = await Promise.all(
-    // @ts-expect-error ts-migrate(7006) FIXME: Parameter 'document' implicitly has an 'any' type.
     documents.map((document) => presentDocument(document))
   );
   const policies = presentPolicies(user, documents);
+
   ctx.body = {
     pagination: ctx.state.pagination,
     data,
     policies,
   };
 });
-
-async function loadDocument({
-  // @ts-expect-error ts-migrate(7031) FIXME: Binding element 'id' implicitly has an 'any' type.
-  id,
-  // @ts-expect-error ts-migrate(7031) FIXME: Binding element 'shareId' implicitly has an 'any' ... Remove this comment to see the full error message
-  shareId,
-  // @ts-expect-error ts-migrate(7031) FIXME: Binding element 'user' implicitly has an 'any' typ... Remove this comment to see the full error message
-  user,
-}): Promise<{
-  document: Document;
-  // @ts-expect-error ts-migrate(2749) FIXME: 'Share' refers to a value, but is being used as a ... Remove this comment to see the full error message
-  share?: Share;
-  // @ts-expect-error ts-migrate(2749) FIXME: 'Collection' refers to a value, but is being used ... Remove this comment to see the full error message
-  collection: Collection;
-}> {
-  let document;
-  let collection;
-  let share;
-
-  if (shareId) {
-    share = await Share.findOne({
-      where: {
-        revokedAt: {
-          [Op.eq]: null,
-        },
-        id: shareId,
-      },
-      include: [
-        {
-          // unscoping here allows us to return unpublished documents
-          model: Document.unscoped(),
-          include: [
-            {
-              model: User,
-              as: "createdBy",
-              paranoid: false,
-            },
-            {
-              model: User,
-              as: "updatedBy",
-              paranoid: false,
-            },
-          ],
-          required: true,
-          as: "document",
-        },
-      ],
-    });
-
-    if (!share || share.document.archivedAt) {
-      throw InvalidRequestError("Document could not be found for shareId");
-    }
-
-    // It is possible to pass both an id and a shareId to the documents.info
-    // endpoint. In this case we'll load the document based on the `id` and check
-    // if the provided share token allows access. This is used by the frontend
-    // to navigate nested documents from a single share link.
-    if (id) {
-      document = await Document.findByPk(id, {
-        userId: user ? user.id : undefined,
-        paranoid: false,
-      }); // otherwise, if the user has an authenticated session make sure to load
-      // with their details so that we can return the correct policies, they may
-      // be able to edit the shared document
-    } else if (user) {
-      document = await Document.findByPk(share.documentId, {
-        userId: user.id,
-        paranoid: false,
-      });
-    } else {
-      document = share.document;
-    }
-
-    // If the user has access to read the document, we can just update
-    // the last access date and return the document without additional checks.
-    const canReadDocument = can(user, "read", document);
-
-    if (canReadDocument) {
-      await share.update({
-        lastAccessedAt: new Date(),
-      });
-      return {
-        document,
-        share,
-        collection: document.collection,
-      };
-    }
-
-    // "published" === on the public internet.
-    // We already know that there's either no logged in user or the user doesn't
-    // have permission to read the document, so we can throw an error.
-    if (!share.published) {
-      throw AuthorizationError();
-    }
-
-    // It is possible to disable sharing at the collection so we must check
-    collection = await Collection.findByPk(document.collectionId);
-
-    if (!collection.sharing) {
-      throw AuthorizationError();
-    }
-
-    // If we're attempting to load a document that isn't the document originally
-    // shared then includeChildDocuments must be enabled and the document must
-    // still be nested within the shared document
-    if (share.document.id !== document.id) {
-      if (
-        !share.includeChildDocuments ||
-        !collection.isChildDocument(share.document.id, document.id)
-      ) {
-        throw AuthorizationError();
-      }
-    }
-
-    // It is possible to disable sharing at the team level so we must check
-    const team = await Team.findByPk(document.teamId);
-
-    if (!team.sharing) {
-      throw AuthorizationError();
-    }
-
-    await share.update({
-      lastAccessedAt: new Date(),
-    });
-  } else {
-    document = await Document.findByPk(id, {
-      userId: user ? user.id : undefined,
-      paranoid: false,
-    });
-
-    if (!document) {
-      throw NotFoundError();
-    }
-
-    if (document.deletedAt) {
-      // don't send data if user cannot restore deleted doc
-      authorize(user, "restore", document);
-    } else {
-      authorize(user, "read", document);
-    }
-
-    collection = document.collection;
-  }
-
-  return {
-    document,
-    share,
-    collection,
-  };
-}
 
 router.post(
   "documents.info",
@@ -605,7 +390,7 @@ router.post(
     const { id, shareId, apiVersion } = ctx.body;
     assertPresent(id || shareId, "id or shareId is required");
     const { user } = ctx.state;
-    const { document, share, collection } = await loadDocument({
+    const { document, share, collection } = await documentLoader({
       id,
       shareId,
       user,
@@ -616,6 +401,7 @@ router.post(
     });
     // Passing apiVersion=2 has a single effect, to change the response payload to
     // include document and sharedTree keys.
+
     const data =
       apiVersion === 2
         ? {
@@ -641,14 +427,13 @@ router.post(
   async (ctx) => {
     const { id, shareId } = ctx.body;
     assertPresent(id || shareId, "id or shareId is required");
-    const user = ctx.state.user;
-    const { document } = await loadDocument({
+    const { user } = ctx.state;
+    const { document } = await documentLoader({
       id,
       shareId,
       user,
     });
     ctx.body = {
-      // @ts-expect-error ts-migrate(2339) FIXME: Property 'toMarkdown' does not exist on type 'Docu... Remove this comment to see the full error message
       data: document.toMarkdown(),
     };
   }
@@ -657,7 +442,7 @@ router.post(
 router.post("documents.restore", auth(), async (ctx) => {
   const { id, collectionId, revisionId } = ctx.body;
   assertPresent(id, "id is required");
-  const user = ctx.state.user;
+  const { user } = ctx.state;
   const document = await Document.findByPk(id, {
     userId: user.id,
     paranoid: false,
@@ -722,7 +507,9 @@ router.post("documents.restore", auth(), async (ctx) => {
     // restore a document to a specific revision
     authorize(user, "update", document);
     const revision = await Revision.findByPk(revisionId);
+
     authorize(document, "restore", revision);
+
     document.text = revision.text;
     document.title = revision.title;
     await document.save();
@@ -750,25 +537,25 @@ router.post("documents.restore", auth(), async (ctx) => {
 router.post("documents.search_titles", auth(), pagination(), async (ctx) => {
   const { query } = ctx.body;
   const { offset, limit } = ctx.state.pagination;
-  const user = ctx.state.user;
+  const { user } = ctx.state;
 
   assertPresent(query, "query is required");
   const collectionIds = await user.collectionIds();
-  const documents = await Document.scope(
+  const documents = await Document.scope([
     {
       method: ["withViews", user.id],
     },
     {
-      method: ["withCollection", user.id],
-    }
-  ).findAll({
+      method: ["withCollectionPermissions", user.id],
+    },
+  ]).findAll({
     where: {
       title: {
         [Op.iLike]: `%${query}%`,
       },
       collectionId: collectionIds,
       archivedAt: {
-        [Op.eq]: null,
+        [Op.is]: null,
       },
     },
     order: [["updatedAt", "DESC"]],
@@ -789,9 +576,9 @@ router.post("documents.search_titles", auth(), pagination(), async (ctx) => {
   });
   const policies = presentPolicies(user, documents);
   const data = await Promise.all(
-    // @ts-expect-error ts-migrate(7006) FIXME: Parameter 'document' implicitly has an 'any' type.
     documents.map((document) => presentDocument(document))
   );
+
   ctx.body = {
     pagination: ctx.state.pagination,
     data,
@@ -799,96 +586,152 @@ router.post("documents.search_titles", auth(), pagination(), async (ctx) => {
   };
 });
 
-router.post("documents.search", auth(), pagination(), async (ctx) => {
-  const {
-    query,
-    includeArchived,
-    includeDrafts,
-    collectionId,
-    userId,
-    dateFilter,
-  } = ctx.body;
-  const { offset, limit } = ctx.state.pagination;
-  const user = ctx.state.user;
-
-  assertPresent(query, "query is required");
-
-  if (collectionId) {
-    assertUuid(collectionId, "collectionId must be a UUID");
-    const collection = await Collection.scope({
-      method: ["withMembership", user.id],
-    }).findByPk(collectionId);
-    authorize(user, "read", collection);
-  }
-
-  let collaboratorIds = undefined;
-
-  if (userId) {
-    assertUuid(userId, "userId must be a UUID");
-    collaboratorIds = [userId];
-  }
-
-  if (dateFilter) {
-    assertIn(
-      dateFilter,
-      ["day", "week", "month", "year"],
-      "dateFilter must be one of day,week,month,year"
-    );
-  }
-
-  const { results, totalCount } = await Document.searchForUser(user, query, {
-    includeArchived: includeArchived === "true",
-    includeDrafts: includeDrafts === "true",
-    collaboratorIds,
-    collectionId,
-    dateFilter,
-    offset,
-    limit,
-  });
-  // @ts-expect-error ts-migrate(7006) FIXME: Parameter 'result' implicitly has an 'any' type.
-  const documents = results.map((result) => result.document);
-  const data = await Promise.all(
-    // @ts-expect-error ts-migrate(7006) FIXME: Parameter 'result' implicitly has an 'any' type.
-    results.map(async (result) => {
-      const document = await presentDocument(result.document);
-      return { ...result, document };
-    })
-  );
-
-  // When requesting subsequent pages of search results we don't want to record
-  // duplicate search query records
-  if (offset === 0) {
-    SearchQuery.create({
-      userId: user.id,
-      teamId: user.teamId,
-      source: ctx.state.authType,
+router.post(
+  "documents.search",
+  auth({
+    required: false,
+  }),
+  pagination(),
+  async (ctx) => {
+    const {
       query,
-      results: totalCount,
-    });
+      includeArchived,
+      includeDrafts,
+      collectionId,
+      userId,
+      dateFilter,
+      shareId,
+    } = ctx.body;
+    assertNotEmpty(query, "query is required");
+
+    const { offset, limit } = ctx.state.pagination;
+    const snippetMinWords = parseInt(ctx.body.snippetMinWords || 20, 10);
+    const snippetMaxWords = parseInt(ctx.body.snippetMaxWords || 30, 10);
+
+    // this typing is a bit ugly, would be better to use a type like ContextWithState
+    // but that doesn't adequately handle cases when auth is optional
+    const { user }: { user: User | undefined } = ctx.state;
+
+    let teamId;
+    let response;
+
+    if (shareId) {
+      const { share, document } = await documentLoader({
+        shareId,
+        user,
+      });
+
+      if (!share?.includeChildDocuments) {
+        throw InvalidRequestError("Child documents cannot be searched");
+      }
+
+      teamId = share.teamId;
+      const team = await Team.findByPk(teamId);
+      invariant(team, "Share must belong to a team");
+
+      response = await Document.searchForTeam(team, query, {
+        includeArchived: includeArchived === "true",
+        includeDrafts: includeDrafts === "true",
+        collectionId: document.collectionId,
+        share,
+        dateFilter,
+        offset,
+        limit,
+        snippetMinWords,
+        snippetMaxWords,
+      });
+    } else {
+      if (!user) {
+        throw AuthenticationError("Authentication error");
+      }
+
+      teamId = user.teamId;
+
+      if (collectionId) {
+        assertUuid(collectionId, "collectionId must be a UUID");
+        const collection = await Collection.scope({
+          method: ["withMembership", user.id],
+        }).findByPk(collectionId);
+        authorize(user, "read", collection);
+      }
+
+      let collaboratorIds = undefined;
+
+      if (userId) {
+        assertUuid(userId, "userId must be a UUID");
+        collaboratorIds = [userId];
+      }
+
+      if (dateFilter) {
+        assertIn(
+          dateFilter,
+          ["day", "week", "month", "year"],
+          "dateFilter must be one of day,week,month,year"
+        );
+      }
+
+      response = await Document.searchForUser(user, query, {
+        includeArchived: includeArchived === "true",
+        includeDrafts: includeDrafts === "true",
+        collaboratorIds,
+        collectionId,
+        dateFilter,
+        offset,
+        limit,
+        snippetMinWords,
+        snippetMaxWords,
+      });
+    }
+
+    const { results, totalCount } = response;
+    const documents = results.map((result) => result.document);
+
+    const data = await Promise.all(
+      results.map(async (result) => {
+        const document = await presentDocument(result.document);
+        return { ...result, document };
+      })
+    );
+
+    // When requesting subsequent pages of search results we don't want to record
+    // duplicate search query records
+    if (offset === 0) {
+      SearchQuery.create({
+        userId: user?.id,
+        teamId,
+        shareId,
+        source: ctx.state.authType || "app", // we'll consider anything that isn't "api" to be "app"
+        query,
+        results: totalCount,
+      });
+    }
+
+    ctx.body = {
+      pagination: ctx.state.pagination,
+      data,
+      policies: user ? presentPolicies(user, documents) : null,
+    };
   }
+);
 
-  const policies = presentPolicies(user, documents);
-  ctx.body = {
-    pagination: ctx.state.pagination,
-    data,
-    policies,
-  };
-});
-
+// Deprecated – use stars.create instead
 router.post("documents.star", auth(), async (ctx) => {
   const { id } = ctx.body;
   assertPresent(id, "id is required");
-  const user = ctx.state.user;
+  const { user } = ctx.state;
+
   const document = await Document.findByPk(id, {
     userId: user.id,
   });
   authorize(user, "read", document);
+
   await Star.findOrCreate({
     where: {
       documentId: document.id,
       userId: user.id,
     },
   });
+
   await Event.create({
     name: "documents.star",
     documentId: document.id,
@@ -900,19 +743,23 @@ router.post("documents.star", auth(), async (ctx) => {
     },
     ip: ctx.request.ip,
   });
+
   ctx.body = {
     success: true,
   };
 });
 
+// Deprecated – use stars.delete instead
 router.post("documents.unstar", auth(), async (ctx) => {
   const { id } = ctx.body;
   assertPresent(id, "id is required");
-  const user = ctx.state.user;
+  const { user } = ctx.state;
+
   const document = await Document.findByPk(id, {
     userId: user.id,
   });
   authorize(user, "read", document);
+
   await Star.destroy({
     where: {
       documentId: document.id,
@@ -930,6 +777,7 @@ router.post("documents.unstar", auth(), async (ctx) => {
     },
     ip: ctx.request.ip,
   });
+
   ctx.body = {
     success: true,
   };
@@ -938,12 +786,14 @@ router.post("documents.unstar", auth(), async (ctx) => {
 router.post("documents.templatize", auth(), async (ctx) => {
   const { id } = ctx.body;
   assertPresent(id, "id is required");
-  const user = ctx.state.user;
+  const { user } = ctx.state;
+
   const original = await Document.findByPk(id, {
     userId: user.id,
   });
   authorize(user, "update", original);
-  let document = await Document.create({
+
+  const document = await Document.create({
     editorVersion: original.editorVersion,
     collectionId: original.collectionId,
     teamId: original.teamId,
@@ -967,13 +817,16 @@ router.post("documents.templatize", auth(), async (ctx) => {
     },
     ip: ctx.request.ip,
   });
+
   // reload to get all of the data needed to present (user, collection etc)
-  document = await Document.findByPk(document.id, {
+  const reloaded = await Document.findByPk(document.id, {
     userId: user.id,
   });
+  invariant(reloaded, "document not found");
+
   ctx.body = {
-    data: await presentDocument(document),
-    policies: presentPolicies(user, [document]),
+    data: await presentDocument(reloaded),
+    policies: presentPolicies(user, [reloaded]),
   };
 });
 
@@ -984,115 +837,52 @@ router.post("documents.update", auth(), async (ctx) => {
     text,
     fullWidth,
     publish,
-    autosave,
-    done,
     lastRevision,
     templateId,
     append,
   } = ctx.body;
-  const editorVersion = ctx.headers["x-editor-version"];
+  const editorVersion = ctx.headers["x-editor-version"] as string | undefined;
   assertPresent(id, "id is required");
-  assertPresent(title || text, "title or text is required");
-  if (append) assertPresent(text, "Text is required while appending");
-  const user = ctx.state.user;
-  const document = await Document.findByPk(id, {
-    userId: user.id,
+  if (append) {
+    assertPresent(text, "Text is required while appending");
+  }
+  const { user } = ctx.state;
+
+  let collection: Collection | null | undefined;
+
+  const document = await sequelize.transaction(async (transaction) => {
+    const document = await Document.findByPk(id, {
+      userId: user.id,
+      transaction,
+    });
+    authorize(user, "update", document);
+
+    collection = document.collection;
+
+    if (lastRevision && lastRevision !== document.revisionCount) {
+      throw InvalidRequestError("Document has changed since last revision");
+    }
+
+    return documentUpdater({
+      document,
+      user,
+      title,
+      text,
+      fullWidth,
+      publish,
+      append,
+      templateId,
+      editorVersion,
+      transaction,
+      ip: ctx.request.ip,
+    });
   });
-  authorize(user, "update", document);
 
-  if (lastRevision && lastRevision !== document.revisionCount) {
-    throw InvalidRequestError("Document has changed since last revision");
-  }
-
-  const previousTitle = document.title;
-
-  // Update document
-  if (title) document.title = title;
-  if (editorVersion) document.editorVersion = editorVersion;
-  if (templateId) document.templateId = templateId;
-  if (fullWidth !== undefined) document.fullWidth = fullWidth;
-
-  if (!user.team?.collaborativeEditing) {
-    if (append) {
-      document.text += text;
-    } else if (text !== undefined) {
-      document.text = text;
-    }
-  }
-
-  document.lastModifiedById = user.id;
-  const { collection } = document;
-  const changed = document.changed();
-  let transaction;
-
-  try {
-    transaction = await sequelize.transaction();
-
-    if (publish) {
-      await document.publish(user.id, {
-        transaction,
-      });
-    } else {
-      await document.save({
-        autosave,
-        transaction,
-      });
-    }
-
-    await transaction.commit();
-  } catch (err) {
-    if (transaction) {
-      await transaction.rollback();
-    }
-
-    throw err;
-  }
-
-  if (publish) {
-    await Event.create({
-      name: "documents.publish",
-      documentId: document.id,
-      collectionId: document.collectionId,
-      teamId: document.teamId,
-      actorId: user.id,
-      data: {
-        title: document.title,
-      },
-      ip: ctx.request.ip,
-    });
-  } else if (changed) {
-    await Event.create({
-      name: "documents.update",
-      documentId: document.id,
-      collectionId: document.collectionId,
-      teamId: document.teamId,
-      actorId: user.id,
-      data: {
-        autosave,
-        done,
-        title: document.title,
-      },
-      ip: ctx.request.ip,
-    });
-  }
-
-  if (document.title !== previousTitle) {
-    Event.add({
-      name: "documents.title_change",
-      documentId: document.id,
-      collectionId: document.collectionId,
-      teamId: document.teamId,
-      actorId: user.id,
-      data: {
-        previousTitle,
-        title: document.title,
-      },
-      ip: ctx.request.ip,
-    });
-  }
+  invariant(collection, "collection not found");
 
   document.updatedBy = user;
   document.collection = collection;
+
   ctx.body = {
     data: await presentDocument(document),
     policies: presentPolicies(user, [document]),
@@ -1118,11 +908,12 @@ router.post("documents.move", auth(), async (ctx) => {
     );
   }
 
-  const user = ctx.state.user;
+  const { user } = ctx.state;
   const document = await Document.findByPk(id, {
     userId: user.id,
   });
   authorize(user, "move", document);
+
   const collection = await Collection.scope({
     method: ["withMembership", user.id],
   }).findByPk(collectionId);
@@ -1135,14 +926,22 @@ router.post("documents.move", auth(), async (ctx) => {
     authorize(user, "update", parent);
   }
 
-  const { documents, collections, collectionChanged } = await documentMover({
-    user,
-    document,
-    collectionId,
-    parentDocumentId,
-    index,
-    ip: ctx.request.ip,
-  });
+  const {
+    documents,
+    collections,
+    collectionChanged,
+  } = await sequelize.transaction(async (transaction) =>
+    documentMover({
+      user,
+      document,
+      collectionId,
+      parentDocumentId,
+      index,
+      ip: ctx.request.ip,
+      transaction,
+    })
+  );
+
   ctx.body = {
     data: {
       documents: await Promise.all(
@@ -1159,11 +958,13 @@ router.post("documents.move", auth(), async (ctx) => {
 router.post("documents.archive", auth(), async (ctx) => {
   const { id } = ctx.body;
   assertPresent(id, "id is required");
-  const user = ctx.state.user;
+  const { user } = ctx.state;
+
   const document = await Document.findByPk(id, {
     userId: user.id,
   });
   authorize(user, "archive", document);
+
   await document.archive(user.id);
   await Event.create({
     name: "documents.archive",
@@ -1176,6 +977,7 @@ router.post("documents.archive", auth(), async (ctx) => {
     },
     ip: ctx.request.ip,
   });
+
   ctx.body = {
     data: await presentDocument(document),
     policies: presentPolicies(user, [document]),
@@ -1185,7 +987,7 @@ router.post("documents.archive", auth(), async (ctx) => {
 router.post("documents.delete", auth(), async (ctx) => {
   const { id, permanent } = ctx.body;
   assertPresent(id, "id is required");
-  const user = ctx.state.user;
+  const { user } = ctx.state;
 
   if (permanent) {
     const document = await Document.findByPk(id, {
@@ -1193,6 +995,7 @@ router.post("documents.delete", auth(), async (ctx) => {
       paranoid: false,
     });
     authorize(user, "permanentDelete", document);
+
     await Document.update(
       {
         parentDocumentId: null,
@@ -1220,7 +1023,9 @@ router.post("documents.delete", auth(), async (ctx) => {
     const document = await Document.findByPk(id, {
       userId: user.id,
     });
+
     authorize(user, "delete", document);
+
     await document.delete(user.id);
     await Event.create({
       name: "documents.delete",
@@ -1243,11 +1048,18 @@ router.post("documents.delete", auth(), async (ctx) => {
 router.post("documents.unpublish", auth(), async (ctx) => {
   const { id } = ctx.body;
   assertPresent(id, "id is required");
-  const user = ctx.state.user;
+  const { user } = ctx.state;
+
   const document = await Document.findByPk(id, {
     userId: user.id,
   });
   authorize(user, "unpublish", document);
+
+  const childDocumentIds = await document.getChildDocumentIds();
+  if (childDocumentIds.length > 0) {
+    throw InvalidRequestError("Cannot unpublish document with child documents");
+  }
+
   await document.unpublish(user.id);
   await Event.create({
     name: "documents.unpublish",
@@ -1260,6 +1072,7 @@ router.post("documents.unpublish", auth(), async (ctx) => {
     },
     ip: ctx.request.ip,
   });
+
   ctx.body = {
     data: await presentDocument(document),
     policies: presentPolicies(user, [document]),
@@ -1277,8 +1090,7 @@ router.post("documents.import", auth(), async (ctx) => {
   const file: any = Object.values(ctx.request.files)[0];
   assertPresent(file, "file is required");
 
-  // @ts-expect-error ts-migrate(2532) FIXME: Object is possibly 'undefined'.
-  if (file.size > env.MAXIMUM_IMPORT_SIZE) {
+  if (env.MAXIMUM_IMPORT_SIZE && file.size > env.MAXIMUM_IMPORT_SIZE) {
     throw InvalidRequestError("The selected file was too large to import");
   }
 
@@ -1288,9 +1100,12 @@ router.post("documents.import", auth(), async (ctx) => {
     assertUuid(parentDocumentId, "parentDocumentId must be an uuid");
   }
 
-  if (index) assertPositiveInteger(index, "index must be an integer (>=0)");
-  const user = ctx.state.user;
+  if (index) {
+    assertPositiveInteger(index, "index must be an integer (>=0)");
+  }
+  const { user } = ctx.state;
   authorize(user, "createDocument", user.team);
+
   const collection = await Collection.scope({
     method: ["withMembership", user.id],
   }).findOne({
@@ -1314,24 +1129,33 @@ router.post("documents.import", auth(), async (ctx) => {
     });
   }
 
-  const { text, title } = await documentImporter({
-    user,
-    file,
-    ip: ctx.request.ip,
+  const content = await fs.readFile(file.path);
+  const document = await sequelize.transaction(async (transaction) => {
+    const { text, title } = await documentImporter({
+      user,
+      fileName: file.name,
+      mimeType: file.type,
+      content,
+      ip: ctx.request.ip,
+      transaction,
+    });
+
+    return documentCreator({
+      source: "import",
+      title,
+      text,
+      publish,
+      collectionId,
+      parentDocumentId,
+      index,
+      user,
+      ip: ctx.request.ip,
+      transaction,
+    });
   });
-  const document = await documentCreator({
-    source: "import",
-    title,
-    text,
-    publish,
-    collectionId,
-    parentDocumentId,
-    index,
-    user,
-    ip: ctx.request.ip,
-  });
-  // @ts-expect-error ts-migrate(2339) FIXME: Property 'collection' does not exist on type 'Docu... Remove this comment to see the full error message
+
   document.collection = collection;
+
   return (ctx.body = {
     data: await presentDocument(document),
     policies: presentPolicies(user, [document]),
@@ -1349,16 +1173,19 @@ router.post("documents.create", auth(), async (ctx) => {
     template,
     index,
   } = ctx.body;
-  const editorVersion = ctx.headers["x-editor-version"];
+  const editorVersion = ctx.headers["x-editor-version"] as string | undefined;
   assertUuid(collectionId, "collectionId must be an uuid");
 
   if (parentDocumentId) {
     assertUuid(parentDocumentId, "parentDocumentId must be an uuid");
   }
 
-  if (index) assertPositiveInteger(index, "index must be an integer (>=0)");
-  const user = ctx.state.user;
+  if (index) {
+    assertPositiveInteger(index, "index must be an integer (>=0)");
+  }
+  const { user } = ctx.state;
   authorize(user, "createDocument", user.team);
+
   const collection = await Collection.scope({
     method: ["withMembership", user.id],
   }).findOne({
@@ -1368,6 +1195,7 @@ router.post("documents.create", auth(), async (ctx) => {
     },
   });
   authorize(user, "publish", collection);
+
   let parentDocument;
 
   if (parentDocumentId) {
@@ -1382,7 +1210,7 @@ router.post("documents.create", auth(), async (ctx) => {
     });
   }
 
-  let templateDocument;
+  let templateDocument: Document | null | undefined;
 
   if (templateId) {
     templateDocument = await Document.findByPk(templateId, {
@@ -1391,22 +1219,25 @@ router.post("documents.create", auth(), async (ctx) => {
     authorize(user, "read", templateDocument);
   }
 
-  const document = await documentCreator({
-    title,
-    text,
-    publish,
-    collectionId,
-    parentDocumentId,
-    templateDocument,
-    template,
-    index,
-    user,
-    // @ts-expect-error ts-migrate(2322) FIXME: Type 'string | string[] | undefined' is not assign... Remove this comment to see the full error message
-    editorVersion,
-    ip: ctx.request.ip,
+  const document = await sequelize.transaction(async (transaction) => {
+    return documentCreator({
+      title,
+      text,
+      publish,
+      collectionId,
+      parentDocumentId,
+      templateDocument,
+      template,
+      index,
+      user,
+      editorVersion,
+      ip: ctx.request.ip,
+      transaction,
+    });
   });
-  // @ts-expect-error ts-migrate(2339) FIXME: Property 'collection' does not exist on type 'Docu... Remove this comment to see the full error message
+
   document.collection = collection;
+
   return (ctx.body = {
     data: await presentDocument(document),
     policies: presentPolicies(user, [document]),

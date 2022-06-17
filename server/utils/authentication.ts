@@ -2,21 +2,14 @@ import querystring from "querystring";
 import { addMonths } from "date-fns";
 import { Context } from "koa";
 import { pick } from "lodash";
-import Logger from "@server/logging/logger";
+import { getCookieDomain } from "@shared/utils/domains";
+import env from "@server/env";
+import Logger from "@server/logging/Logger";
 import { User, Event, Team, Collection, View } from "@server/models";
-import { getCookieDomain } from "@server/utils/domains";
-
-export function getAllowedDomains(): string[] {
-  // GOOGLE_ALLOWED_DOMAINS included here for backwards compatability
-  const env = process.env.ALLOWED_DOMAINS || process.env.GOOGLE_ALLOWED_DOMAINS;
-  return env ? env.split(",") : [];
-}
 
 export async function signIn(
   ctx: Context,
-  // @ts-expect-error ts-migrate(2749) FIXME: 'User' refers to a value, but is being used as a t... Remove this comment to see the full error message
   user: User,
-  // @ts-expect-error ts-migrate(2749) FIXME: 'Team' refers to a value, but is being used as a t... Remove this comment to see the full error message
   team: Team,
   service: string,
   _isNewUser = false,
@@ -72,7 +65,7 @@ export async function signIn(
 
   // set a transfer cookie for the access token itself and redirect
   // to the teams subdomain if subdomains are enabled
-  if (process.env.SUBDOMAINS_ENABLED === "true" && team.subdomain) {
+  if (env.SUBDOMAINS_ENABLED && team.subdomain) {
     // get any existing sessions (teams signed in) and add this team
     const existing = JSON.parse(
       decodeURIComponent(ctx.cookies.get("sessions") || "") || "{}"
@@ -98,6 +91,23 @@ export async function signIn(
       httpOnly: false,
       expires,
     });
+
+    const defaultCollectionId = team.defaultCollectionId;
+
+    if (defaultCollectionId) {
+      const collection = await Collection.findOne({
+        where: {
+          id: defaultCollectionId,
+          teamId: team.id,
+        },
+      });
+
+      if (collection) {
+        ctx.redirect(`${team.url}${collection.url}`);
+        return;
+      }
+    }
+
     const [collection, view] = await Promise.all([
       Collection.findFirstCollectionForUser(user),
       View.findOne({

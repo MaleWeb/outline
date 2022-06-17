@@ -1,19 +1,20 @@
-// @ts-expect-error ts-migrate(7016) FIXME: Could not find a declaration file for module 'fetc... Remove this comment to see the full error message
 import TestServer from "fetch-test-server";
-import mailer from "@server/mailer";
+import sharedEnv from "@shared/env";
+import SigninEmail from "@server/emails/templates/SigninEmail";
+import WelcomeEmail from "@server/emails/templates/WelcomeEmail";
+import env from "@server/env";
 import webService from "@server/services/web";
 import { buildUser, buildGuestUser, buildTeam } from "@server/test/factories";
 import { flushdb } from "@server/test/support";
 
 const app = webService();
 const server = new TestServer(app.callback());
-jest.mock("../../../mailer");
+
 beforeEach(async () => {
   await flushdb();
-  // @ts-expect-error ts-migrate(2339) FIXME: Property 'mockReset' does not exist on type '(type... Remove this comment to see the full error message
-  mailer.sendTemplate.mockReset();
 });
 afterAll(() => server.close());
+
 describe("email", () => {
   it("should require email param", async () => {
     const res = await server.post("/auth/email", {
@@ -26,6 +27,7 @@ describe("email", () => {
   });
 
   it("should respond with redirect location when user is SSO enabled", async () => {
+    const spy = jest.spyOn(WelcomeEmail, "schedule");
     const user = await buildUser();
     const res = await server.post("/auth/email", {
       body: {
@@ -35,13 +37,15 @@ describe("email", () => {
     const body = await res.json();
     expect(res.status).toEqual(200);
     expect(body.redirect).toMatch("slack");
-    expect(mailer.sendTemplate).not.toHaveBeenCalled();
+    expect(spy).not.toHaveBeenCalled();
+    spy.mockRestore();
   });
 
   it("should respond with redirect location when user is SSO enabled on another subdomain", async () => {
-    process.env.URL = "http://localoutline.com";
-    process.env.SUBDOMAINS_ENABLED = "true";
+    env.URL = sharedEnv.URL = "http://localoutline.com";
+    env.SUBDOMAINS_ENABLED = sharedEnv.SUBDOMAINS_ENABLED = true;
     const user = await buildUser();
+    const spy = jest.spyOn(WelcomeEmail, "schedule");
     await buildTeam({
       subdomain: "example",
     });
@@ -56,10 +60,12 @@ describe("email", () => {
     const body = await res.json();
     expect(res.status).toEqual(200);
     expect(body.redirect).toMatch("slack");
-    expect(mailer.sendTemplate).not.toHaveBeenCalled();
+    expect(spy).not.toHaveBeenCalled();
+    spy.mockRestore();
   });
 
   it("should respond with success when user is not SSO enabled", async () => {
+    const spy = jest.spyOn(SigninEmail, "schedule");
     const user = await buildGuestUser();
     const res = await server.post("/auth/email", {
       body: {
@@ -69,10 +75,12 @@ describe("email", () => {
     const body = await res.json();
     expect(res.status).toEqual(200);
     expect(body.success).toEqual(true);
-    expect(mailer.sendTemplate).toHaveBeenCalled();
+    expect(spy).toHaveBeenCalled();
+    spy.mockRestore();
   });
 
   it("should respond with success regardless of whether successful to prevent crawling email logins", async () => {
+    const spy = jest.spyOn(WelcomeEmail, "schedule");
     const res = await server.post("/auth/email", {
       body: {
         email: "user@example.com",
@@ -81,12 +89,14 @@ describe("email", () => {
     const body = await res.json();
     expect(res.status).toEqual(200);
     expect(body.success).toEqual(true);
-    expect(mailer.sendTemplate).not.toHaveBeenCalled();
+    expect(spy).not.toHaveBeenCalled();
+    spy.mockRestore();
   });
   describe("with multiple users matching email", () => {
     it("should default to current subdomain with SSO", async () => {
-      process.env.URL = "http://localoutline.com";
-      process.env.SUBDOMAINS_ENABLED = "true";
+      const spy = jest.spyOn(SigninEmail, "schedule");
+      env.URL = sharedEnv.URL = "http://localoutline.com";
+      env.SUBDOMAINS_ENABLED = sharedEnv.SUBDOMAINS_ENABLED = true;
       const email = "sso-user@example.org";
       const team = await buildTeam({
         subdomain: "example",
@@ -109,11 +119,14 @@ describe("email", () => {
       const body = await res.json();
       expect(res.status).toEqual(200);
       expect(body.redirect).toMatch("slack");
-      expect(mailer.sendTemplate).not.toHaveBeenCalled();
+      expect(spy).not.toHaveBeenCalled();
+      spy.mockRestore();
     });
+
     it("should default to current subdomain with guest email", async () => {
-      process.env.URL = "http://localoutline.com";
-      process.env.SUBDOMAINS_ENABLED = "true";
+      const spy = jest.spyOn(SigninEmail, "schedule");
+      env.URL = sharedEnv.URL = "http://localoutline.com";
+      env.SUBDOMAINS_ENABLED = sharedEnv.SUBDOMAINS_ENABLED = true;
       const email = "guest-user@example.org";
       const team = await buildTeam({
         subdomain: "example",
@@ -136,9 +149,12 @@ describe("email", () => {
       const body = await res.json();
       expect(res.status).toEqual(200);
       expect(body.success).toEqual(true);
-      expect(mailer.sendTemplate).toHaveBeenCalled();
+      expect(spy).toHaveBeenCalled();
+      spy.mockRestore();
     });
+
     it("should default to custom domain with SSO", async () => {
+      const spy = jest.spyOn(WelcomeEmail, "schedule");
       const email = "sso-user-2@example.org";
       const team = await buildTeam({
         domain: "docs.mycompany.com",
@@ -161,9 +177,12 @@ describe("email", () => {
       const body = await res.json();
       expect(res.status).toEqual(200);
       expect(body.redirect).toMatch("slack");
-      expect(mailer.sendTemplate).not.toHaveBeenCalled();
+      expect(spy).not.toHaveBeenCalled();
+      spy.mockRestore();
     });
+
     it("should default to custom domain with guest email", async () => {
+      const spy = jest.spyOn(SigninEmail, "schedule");
       const email = "guest-user-2@example.org";
       const team = await buildTeam({
         domain: "docs.mycompany.com",
@@ -186,7 +205,8 @@ describe("email", () => {
       const body = await res.json();
       expect(res.status).toEqual(200);
       expect(body.success).toEqual(true);
-      expect(mailer.sendTemplate).toHaveBeenCalled();
+      expect(spy).toHaveBeenCalled();
+      spy.mockRestore();
     });
   });
 });

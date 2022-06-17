@@ -1,28 +1,30 @@
+import invariant from "invariant";
 import Router from "koa-router";
+import { Op } from "sequelize";
 import { MAX_AVATAR_DISPLAY } from "@shared/constants";
 import auth from "@server/middlewares/authentication";
 import { User, Event, Group, GroupUser } from "@server/models";
-import policy from "@server/policies";
+import { authorize } from "@server/policies";
 import {
   presentGroup,
   presentPolicies,
   presentUser,
   presentGroupMembership,
 } from "@server/presenters";
-import { Op } from "@server/sequelize";
 import { assertPresent, assertUuid, assertSort } from "@server/validation";
 import pagination from "./middlewares/pagination";
 
-const { authorize } = policy;
 const router = new Router();
 
 router.post("groups.list", auth(), pagination(), async (ctx) => {
   let { direction } = ctx.body;
   const { sort = "updatedAt" } = ctx.body;
-  if (direction !== "ASC") direction = "DESC";
+  if (direction !== "ASC") {
+    direction = "DESC";
+  }
 
   assertSort(sort, Group);
-  const user = ctx.state.user;
+  const { user } = ctx.state;
   const groups = await Group.findAll({
     where: {
       teamId: user.teamId,
@@ -37,10 +39,8 @@ router.post("groups.list", auth(), pagination(), async (ctx) => {
     data: {
       groups: groups.map(presentGroup),
       groupMemberships: groups
-        // @ts-expect-error ts-migrate(7006) FIXME: Parameter 'g' implicitly has an 'any' type.
         .map((g) =>
           g.groupMemberships
-            // @ts-expect-error ts-migrate(7006) FIXME: Parameter 'membership' implicitly has an 'any' typ... Remove this comment to see the full error message
             .filter((membership) => !!membership.user)
             .slice(0, MAX_AVATAR_DISPLAY)
         )
@@ -55,9 +55,10 @@ router.post("groups.info", auth(), async (ctx) => {
   const { id } = ctx.body;
   assertUuid(id, "id is required");
 
-  const user = ctx.state.user;
+  const { user } = ctx.state;
   const group = await Group.findByPk(id);
   authorize(user, "read", group);
+
   ctx.body = {
     data: presentGroup(group),
     policies: presentPolicies(user, [group]),
@@ -68,15 +69,18 @@ router.post("groups.create", auth(), async (ctx) => {
   const { name } = ctx.body;
   assertPresent(name, "name is required");
 
-  const user = ctx.state.user;
+  const { user } = ctx.state;
   authorize(user, "createGroup", user.team);
-  let group = await Group.create({
+  const g = await Group.create({
     name,
     teamId: user.teamId,
     createdById: user.id,
   });
+
   // reload to get default scope
-  group = await Group.findByPk(group.id);
+  const group = await Group.findByPk(g.id);
+  invariant(group, "group not found");
+
   await Event.create({
     name: "groups.create",
     actorId: user.id,
@@ -87,6 +91,7 @@ router.post("groups.create", auth(), async (ctx) => {
     },
     ip: ctx.request.ip,
   });
+
   ctx.body = {
     data: presentGroup(group),
     policies: presentPolicies(user, [group]),
@@ -98,9 +103,10 @@ router.post("groups.update", auth(), async (ctx) => {
   assertPresent(name, "name is required");
   assertUuid(id, "id is required");
 
-  const user = ctx.state.user;
+  const { user } = ctx.state;
   const group = await Group.findByPk(id);
   authorize(user, "update", group);
+
   group.name = name;
 
   if (group.changed()) {
@@ -130,6 +136,7 @@ router.post("groups.delete", auth(), async (ctx) => {
   const { user } = ctx.state;
   const group = await Group.findByPk(id);
   authorize(user, "delete", group);
+
   await group.destroy();
   await Event.create({
     name: "groups.delete",
@@ -141,6 +148,7 @@ router.post("groups.delete", auth(), async (ctx) => {
     },
     ip: ctx.request.ip,
   });
+
   ctx.body = {
     success: true,
   };
@@ -150,7 +158,7 @@ router.post("groups.memberships", auth(), pagination(), async (ctx) => {
   const { id, query } = ctx.body;
   assertUuid(id, "id is required");
 
-  const user = ctx.state.user;
+  const { user } = ctx.state;
   const group = await Group.findByPk(id);
   authorize(user, "read", group);
   let userWhere;
@@ -179,11 +187,11 @@ router.post("groups.memberships", auth(), pagination(), async (ctx) => {
       },
     ],
   });
+
   ctx.body = {
     pagination: ctx.state.pagination,
     data: {
       groupMemberships: memberships.map(presentGroupMembership),
-      // @ts-expect-error ts-migrate(7006) FIXME: Parameter 'membership' implicitly has an 'any' typ... Remove this comment to see the full error message
       users: memberships.map((membership) => presentUser(membership.user)),
     },
   };
@@ -196,8 +204,10 @@ router.post("groups.add_user", auth(), async (ctx) => {
 
   const user = await User.findByPk(userId);
   authorize(ctx.state.user, "read", user);
+
   let group = await Group.findByPk(id);
   authorize(ctx.state.user, "update", group);
+
   let membership = await GroupUser.findOne({
     where: {
       groupId: id,
@@ -206,7 +216,7 @@ router.post("groups.add_user", auth(), async (ctx) => {
   });
 
   if (!membership) {
-    await group.addUser(user, {
+    await group.$add("user", user, {
       through: {
         createdById: ctx.state.user.id,
       },
@@ -218,8 +228,12 @@ router.post("groups.add_user", auth(), async (ctx) => {
         userId,
       },
     });
+    invariant(membership, "membership not found");
+
     // reload to get default scope
     group = await Group.findByPk(id);
+    invariant(group, "group not found");
+
     await Event.create({
       name: "groups.add_user",
       userId,
@@ -249,9 +263,11 @@ router.post("groups.remove_user", auth(), async (ctx) => {
 
   let group = await Group.findByPk(id);
   authorize(ctx.state.user, "update", group);
+
   const user = await User.findByPk(userId);
   authorize(ctx.state.user, "read", user);
-  await group.removeUser(user);
+
+  await group.$remove("user", user);
   await Event.create({
     name: "groups.remove_user",
     userId,
@@ -263,8 +279,11 @@ router.post("groups.remove_user", auth(), async (ctx) => {
     },
     ip: ctx.request.ip,
   });
+
   // reload to get default scope
   group = await Group.findByPk(id);
+  invariant(group, "group not found");
+
   ctx.body = {
     data: {
       groups: [presentGroup(group)],

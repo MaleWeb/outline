@@ -8,7 +8,6 @@ import { Router } from "react-router-dom";
 import { initI18n } from "@shared/i18n";
 import stores from "~/stores";
 import Analytics from "~/components/Analytics";
-import { CommandBarOptions } from "~/components/CommandBar";
 import Dialogs from "~/components/Dialogs";
 import ErrorBoundary from "~/components/ErrorBoundary";
 import PageTheme from "~/components/PageTheme";
@@ -16,7 +15,9 @@ import ScrollToTop from "~/components/ScrollToTop";
 import Theme from "~/components/Theme";
 import Toasts from "~/components/Toasts";
 import env from "~/env";
+import LazyPolyfill from "./components/LazyPolyfills";
 import Routes from "./routes";
+import Logger from "./utils/Logger";
 import history from "./utils/history";
 import { initSentry } from "./utils/sentry";
 
@@ -38,13 +39,17 @@ if ("serviceWorker" in window.navigator) {
       }
     );
 
-    if (maybePromise && maybePromise.then) {
+    if (maybePromise?.then) {
       maybePromise
         .then((registration) => {
-          console.log("SW registered: ", registration);
+          Logger.debug("lifecycle", "SW registered: ", registration);
         })
         .catch((registrationError) => {
-          console.log("SW registration failed: ", registrationError);
+          Logger.debug(
+            "lifecycle",
+            "SW registration failed: ",
+            registrationError
+          );
         });
     }
   });
@@ -53,6 +58,16 @@ if ("serviceWorker" in window.navigator) {
 // Make sure to return the specific export containing the feature bundle.
 const loadFeatures = () => import("./utils/motion").then((res) => res.default);
 
+const commandBarOptions = {
+  animations: {
+    enterMs: 250,
+    exitMs: 200,
+  },
+  callbacks: {
+    onClose: () => stores.ui.commandBarClosed(),
+  },
+};
+
 if (element) {
   const App = () => (
     <React.StrictMode>
@@ -60,19 +75,21 @@ if (element) {
         <Analytics>
           <Theme>
             <ErrorBoundary>
-              <KBarProvider actions={[]} options={CommandBarOptions}>
-                <LazyMotion features={loadFeatures}>
-                  <Router history={history}>
-                    <>
-                      <PageTheme />
-                      <ScrollToTop>
-                        <Routes />
-                      </ScrollToTop>
-                      <Toasts />
-                      <Dialogs />
-                    </>
-                  </Router>
-                </LazyMotion>
+              <KBarProvider actions={[]} options={commandBarOptions}>
+                <LazyPolyfill>
+                  <LazyMotion features={loadFeatures}>
+                    <Router history={history}>
+                      <>
+                        <PageTheme />
+                        <ScrollToTop>
+                          <Routes />
+                        </ScrollToTop>
+                        <Toasts />
+                        <Dialogs />
+                      </>
+                    </Router>
+                  </LazyMotion>
+                </LazyPolyfill>
               </KBarProvider>
             </ErrorBoundary>
           </Theme>
@@ -87,7 +104,9 @@ if (element) {
 window.addEventListener("load", async () => {
   // installation does not use Google Analytics, or tracking is blocked on client
   // no point loading the rest of the analytics bundles
-  if (!env.GOOGLE_ANALYTICS_ID || !window.ga) return;
+  if (!env.GOOGLE_ANALYTICS_ID || !window.ga) {
+    return;
+  }
   // https://github.com/googleanalytics/autotrack/issues/137#issuecomment-305890099
   await import(
     /* webpackChunkName: "autotrack" */

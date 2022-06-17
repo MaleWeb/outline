@@ -1,76 +1,116 @@
-import { deleteFromS3 } from "@server/utils/s3";
-import { DataTypes, sequelize } from "../sequelize";
+import {
+  ForeignKey,
+  DefaultScope,
+  Column,
+  BeforeDestroy,
+  BelongsTo,
+  Table,
+  DataType,
+} from "sequelize-typescript";
+import { deleteFromS3, getFileByKey } from "@server/utils/s3";
+import Collection from "./Collection";
+import Team from "./Team";
+import User from "./User";
+import IdModel from "./base/IdModel";
+import Fix from "./decorators/Fix";
 
-const FileOperation = sequelize.define("file_operations", {
-  id: {
-    type: DataTypes.UUID,
-    defaultValue: DataTypes.UUIDV4,
-    primaryKey: true,
-  },
-  type: {
-    type: DataTypes.ENUM("import", "export"),
-    allowNull: false,
-  },
-  state: {
-    type: DataTypes.ENUM(
-      "creating",
-      "uploading",
-      "complete",
-      "error",
-      "expired"
-    ),
-    allowNull: false,
-  },
-  key: {
-    type: DataTypes.STRING,
-  },
-  url: {
-    type: DataTypes.STRING,
-  },
-  size: {
-    type: DataTypes.BIGINT,
-    allowNull: false,
-  },
-});
-// @ts-expect-error ts-migrate(7006) FIXME: Parameter 'model' implicitly has an 'any' type.
-FileOperation.beforeDestroy(async (model) => {
-  await deleteFromS3(model.key);
-});
+export enum FileOperationType {
+  Import = "import",
+  Export = "export",
+}
 
-FileOperation.prototype.expire = async function () {
-  this.state = "expired";
-  await deleteFromS3(this.key);
-  await this.save();
-};
+export enum FileOperationFormat {
+  MarkdownZip = "outline-markdown",
+  Notion = "notion",
+}
 
-// @ts-expect-error ts-migrate(7006) FIXME: Parameter 'models' implicitly has an 'any' type.
-FileOperation.associate = (models) => {
-  FileOperation.belongsTo(models.User, {
-    as: "user",
-    foreignKey: "userId",
-  });
-  FileOperation.belongsTo(models.Collection, {
-    as: "collection",
-    foreignKey: "collectionId",
-  });
-  FileOperation.belongsTo(models.Team, {
-    as: "team",
-    foreignKey: "teamId",
-  });
-  FileOperation.addScope("defaultScope", {
-    include: [
-      {
-        model: models.User,
-        as: "user",
-        paranoid: false,
-      },
-      {
-        model: models.Collection,
-        as: "collection",
-        paranoid: false,
-      },
-    ],
-  });
-};
+export enum FileOperationState {
+  Creating = "creating",
+  Uploading = "uploading",
+  Complete = "complete",
+  Error = "error",
+  Expired = "expired",
+}
+
+@DefaultScope(() => ({
+  include: [
+    {
+      model: User,
+      as: "user",
+      paranoid: false,
+    },
+    {
+      model: Collection,
+      as: "collection",
+      paranoid: false,
+    },
+  ],
+}))
+@Table({ tableName: "file_operations", modelName: "file_operation" })
+@Fix
+class FileOperation extends IdModel {
+  @Column(DataType.ENUM("import", "export"))
+  type: FileOperationType;
+
+  @Column(DataType.STRING)
+  format: FileOperationFormat;
+
+  @Column(
+    DataType.ENUM("creating", "uploading", "complete", "error", "expired")
+  )
+  state: FileOperationState;
+
+  @Column
+  key: string;
+
+  @Column
+  url: string;
+
+  @Column
+  error: string | null;
+
+  @Column(DataType.BIGINT)
+  size: number;
+
+  expire = async function () {
+    this.state = "expired";
+    await deleteFromS3(this.key);
+    await this.save();
+  };
+
+  get buffer() {
+    return getFileByKey(this.key);
+  }
+
+  // hooks
+
+  @BeforeDestroy
+  static async deleteFileFromS3(model: FileOperation) {
+    await deleteFromS3(model.key);
+  }
+
+  // associations
+
+  @BelongsTo(() => User, "userId")
+  user: User;
+
+  @ForeignKey(() => User)
+  @Column(DataType.UUID)
+  userId: string;
+
+  @BelongsTo(() => Team, "teamId")
+  team: Team;
+
+  @ForeignKey(() => Team)
+  @Column(DataType.UUID)
+  teamId: string;
+
+  @BelongsTo(() => Collection, "collectionId")
+  collection: Collection;
+
+  @ForeignKey(() => Collection)
+  @Column(DataType.UUID)
+  collectionId: string;
+}
 
 export default FileOperation;

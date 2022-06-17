@@ -1,13 +1,29 @@
 import { Op } from "sequelize";
+import { DomainNotAllowedError, InviteRequiredError } from "@server/errors";
 import { Event, Team, User, UserAuthentication } from "@server/models";
-import { sequelize } from "../sequelize";
 
 type UserCreatorResult = {
-  // @ts-expect-error ts-migrate(2749) FIXME: 'User' refers to a value, but is being used as a t... Remove this comment to see the full error message
   user: User;
   isNewUser: boolean;
-  // @ts-expect-error ts-migrate(2749) FIXME: 'UserAuthentication' refers to a value, but is bei... Remove this comment to see the full error message
   authentication: UserAuthentication;
+};
+
+type Props = {
+  name: string;
+  email: string;
+  username?: string;
+  isAdmin?: boolean;
+  avatarUrl?: string | null;
+  teamId: string;
+  ip: string;
+  authentication: {
+    authenticationProviderId: string;
+    providerId: string;
+    scopes: string[];
+    accessToken?: string;
+    refreshToken?: string;
+    expiresAt?: Date;
+  };
 };
 
 export default async function userCreator({
@@ -19,23 +35,9 @@ export default async function userCreator({
   teamId,
   authentication,
   ip,
-}: {
-  name: string;
-  email: string;
-  username?: string;
-  isAdmin?: boolean;
-  avatarUrl?: string;
-  teamId: string;
-  ip: string;
-  authentication: {
-    authenticationProviderId: string;
-    providerId: string;
-    scopes: string[];
-    accessToken?: string;
-    refreshToken?: string;
-  };
-}): Promise<UserCreatorResult> {
+}: Props): Promise<UserCreatorResult> {
   const { authenticationProviderId, providerId, ...rest } = authentication;
+
   const auth = await UserAuthentication.findOne({
     where: {
       providerId,
@@ -87,10 +89,12 @@ export default async function userCreator({
   // shell user record.
   const invite = await User.findOne({
     where: {
-      email,
+      // Email from auth providers may be capitalized and we should respect that
+      // however any existing invites will always be lowercased.
+      email: email.toLowerCase(),
       teamId,
       lastActiveAt: {
-        [Op.eq]: null,
+        [Op.is]: null,
       },
     },
     include: [
@@ -105,7 +109,7 @@ export default async function userCreator({
   // We have an existing invite for his user, so we need to update it with our
   // new details and link up the authentication method
   if (invite && !invite.authentications.length) {
-    const transaction = await sequelize.transaction();
+    const transaction = await User.sequelize!.transaction();
     let auth;
 
     try {
@@ -118,9 +122,13 @@ export default async function userCreator({
           transaction,
         }
       );
-      auth = await invite.createAuthentication(authentication, {
-        transaction,
-      });
+      auth = await invite.$create<UserAuthentication>(
+        "authentication",
+        authentication,
+        {
+          transaction,
+        }
+      );
       await transaction.commit();
     } catch (err) {
       await transaction.rollback();
@@ -135,13 +143,29 @@ export default async function userCreator({
   }
 
   // No auth, no user – this is an entirely new sign in.
-  const transaction = await sequelize.transaction();
+  const transaction = await User.sequelize!.transaction();
 
   try {
-    const { defaultUserRole } = await Team.findByPk(teamId, {
-      attributes: ["defaultUserRole"],
+    const team = await Team.findByPk(teamId, {
+      attributes: ["defaultUserRole", "inviteRequired", "id"],
       transaction,
     });
+
+    // If the team settings are set to require invites, and the user is not already invited,
+    // throw an error and fail user creation.
+    if (team?.inviteRequired && !invite) {
+      throw InviteRequiredError();
+    }
+
+    // If the team settings do not allow this domain,
+    // throw an error and fail user creation.
+    const domain = email.split("@")[1];
+    if (team && !(await team.isDomainAllowed(domain))) {
+      throw DomainNotAllowedError();
+    }
+
+    const defaultUserRole = team?.defaultUserRole;
+
     const user = await User.create(
       {
         name,

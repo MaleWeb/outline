@@ -1,34 +1,34 @@
-import Logger from "@server/logging/logger";
+import env from "@server/env";
+import { DomainNotAllowedError, MaximumTeamsError } from "@server/errors";
+import Logger from "@server/logging/Logger";
+import { APM } from "@server/logging/tracing";
 import { Team, AuthenticationProvider } from "@server/models";
-import { getAllowedDomains } from "@server/utils/authentication";
 import { generateAvatarUrl } from "@server/utils/avatars";
-import { MaximumTeamsError } from "../errors";
-import { sequelize } from "../sequelize";
 
 type TeamCreatorResult = {
-  // @ts-expect-error ts-migrate(2749) FIXME: 'Team' refers to a value, but is being used as a t... Remove this comment to see the full error message
   team: Team;
-  // @ts-expect-error ts-migrate(2749) FIXME: 'AuthenticationProvider' refers to a value, but is... Remove this comment to see the full error message
   authenticationProvider: AuthenticationProvider;
   isNewTeam: boolean;
 };
 
-export default async function teamCreator({
+type Props = {
+  name: string;
+  domain?: string;
+  subdomain: string;
+  avatarUrl?: string | null;
+  authenticationProvider: {
+    name: string;
+    providerId: string;
+  };
+};
+
+async function teamCreator({
   name,
   domain,
   subdomain,
   avatarUrl,
   authenticationProvider,
-}: {
-  name: string;
-  domain?: string;
-  subdomain: string;
-  avatarUrl?: string;
-  authenticationProvider: {
-    name: string;
-    providerId: string;
-  };
-}): Promise<TeamCreatorResult> {
+}: Props): Promise<TeamCreatorResult> {
   let authP = await AuthenticationProvider.findOne({
     where: authenticationProvider,
     include: [
@@ -53,25 +53,29 @@ export default async function teamCreator({
   // This team has never been seen before, if self hosted the logic is different
   // to the multi-tenant version, we want to restrict to a single team that MAY
   // have multiple authentication providers
-  if (process.env.DEPLOYMENT !== "hosted") {
-    const teamCount = await Team.count();
+  if (env.DEPLOYMENT !== "hosted") {
+    const team = await Team.findOne();
 
     // If the self-hosted installation has a single team and the domain for the
-    // new team matches one in the allowed domains env variable then assign the
-    // authentication provider to the existing team
-    if (teamCount === 1 && domain && getAllowedDomains().includes(domain)) {
-      const team = await Team.findOne();
-      authP = await team.createAuthenticationProvider(authenticationProvider);
-      return {
-        authenticationProvider: authP,
-        team,
-        isNewTeam: false,
-      };
+    // new team is allowed then assign the authentication provider to the
+    // existing team
+    if (team && domain) {
+      if (await team.isDomainAllowed(domain)) {
+        authP = await team.$create<AuthenticationProvider>(
+          "authenticationProvider",
+          authenticationProvider
+        );
+        return {
+          authenticationProvider: authP,
+          team,
+          isNewTeam: false,
+        };
+      } else {
+        throw DomainNotAllowedError();
+      }
     }
 
-    if (teamCount >= 1) {
-      throw MaximumTeamsError();
-    }
+    throw MaximumTeamsError();
   }
 
   // If the service did not provide a logo/avatar then we attempt to generate
@@ -84,7 +88,7 @@ export default async function teamCreator({
     });
   }
 
-  const transaction = await sequelize.transaction();
+  const transaction = await Team.sequelize!.transaction();
   let team;
 
   try {
@@ -120,3 +124,8 @@ export default async function teamCreator({
     isNewTeam: true,
   };
 }
+
+export default APM.traceFunction({
+  serviceName: "command",
+  spanName: "teamCreator",
+})(teamCreator);

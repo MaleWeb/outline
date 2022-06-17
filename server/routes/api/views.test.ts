@@ -1,4 +1,3 @@
-// @ts-expect-error ts-migrate(7016) FIXME: Could not find a declaration file for module 'fetc... Remove this comment to see the full error message
 import TestServer from "fetch-test-server";
 import { View, CollectionUser } from "@server/models";
 import webService from "@server/services/web";
@@ -9,10 +8,11 @@ const app = webService();
 const server = new TestServer(app.callback());
 beforeEach(() => flushdb());
 afterAll(() => server.close());
+
 describe("#views.list", () => {
   it("should return views for a document", async () => {
     const { user, document } = await seed();
-    await View.increment({
+    await View.incrementOrCreate({
       documentId: document.id,
       userId: user.id,
     });
@@ -28,6 +28,26 @@ describe("#views.list", () => {
     expect(body.data[0].user.name).toBe(user.name);
   });
 
+  it("should not return views for suspended user by default", async () => {
+    const { user, admin, document } = await seed();
+    await View.incrementOrCreate({
+      documentId: document.id,
+      userId: user.id,
+    });
+
+    await user.update({ suspendedAt: new Date() });
+
+    const res = await server.post("/api/views.list", {
+      body: {
+        token: admin.getJwtToken(),
+        documentId: document.id,
+      },
+    });
+    const body = await res.json();
+    expect(res.status).toEqual(200);
+    expect(body.data.length).toBe(0);
+  });
+
   it("should return views for a document in read-only collection", async () => {
     const { user, document, collection } = await seed();
     collection.permission = null;
@@ -38,7 +58,7 @@ describe("#views.list", () => {
       userId: user.id,
       permission: "read",
     });
-    await View.increment({
+    await View.incrementOrCreate({
       documentId: document.id,
       userId: user.id,
     });
@@ -78,6 +98,7 @@ describe("#views.list", () => {
     expect(res.status).toEqual(403);
   });
 });
+
 describe("#views.create", () => {
   it("should allow creating a view record for document", async () => {
     const { user, document } = await seed();

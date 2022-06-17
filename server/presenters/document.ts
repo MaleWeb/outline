@@ -1,4 +1,7 @@
-import { Attachment } from "@server/models";
+import { escapeRegExp } from "lodash";
+import { APM } from "@server/logging/tracing";
+import { Document } from "@server/models";
+import Attachment from "@server/models/Attachment";
 import parseAttachmentIds from "@server/utils/parseAttachmentIds";
 import { getSignedUrl } from "@server/utils/s3";
 import presentUser from "./user";
@@ -15,8 +18,11 @@ async function replaceImageAttachments(text: string) {
       const attachment = await Attachment.findByPk(id);
 
       if (attachment) {
-        const accessUrl = await getSignedUrl(attachment.key);
-        text = text.replace(attachment.redirectUrl, accessUrl);
+        const signedUrl = await getSignedUrl(attachment.key, 3600);
+        text = text.replace(
+          new RegExp(escapeRegExp(attachment.redirectUrl), "g"),
+          signedUrl
+        );
       }
     })
   );
@@ -24,8 +30,8 @@ async function replaceImageAttachments(text: string) {
   return text;
 }
 
-export default async function present(
-  document: any,
+async function present(
+  document: Document,
   options: Options | null | undefined = {}
 ) {
   options = {
@@ -36,13 +42,13 @@ export default async function present(
   const text = options.isPublic
     ? await replaceImageAttachments(document.text)
     : document.text;
-  const data = {
+
+  const data: Record<string, any> = {
     id: document.id,
     url: document.url,
     urlId: document.urlId,
     title: document.title,
     text,
-    emoji: document.emoji,
     tasks: document.tasks,
     createdAt: document.createdAt,
     createdBy: undefined,
@@ -55,7 +61,6 @@ export default async function present(
     template: document.template,
     templateId: document.templateId,
     collaboratorIds: [],
-    starred: document.starred ? !!document.starred.length : undefined,
     revision: document.revisionCount,
     fullWidth: document.fullWidth,
     collectionId: undefined,
@@ -70,12 +75,15 @@ export default async function present(
   if (!options.isPublic) {
     data.collectionId = document.collectionId;
     data.parentDocumentId = document.parentDocumentId;
-    // @ts-expect-error ts-migrate(2322) FIXME: Type 'UserPresentation | null | undefined' is not ... Remove this comment to see the full error message
     data.createdBy = presentUser(document.createdBy);
-    // @ts-expect-error ts-migrate(2322) FIXME: Type 'UserPresentation | null | undefined' is not ... Remove this comment to see the full error message
     data.updatedBy = presentUser(document.updatedBy);
     data.collaboratorIds = document.collaboratorIds;
   }
 
   return data;
 }
+
+export default APM.traceFunction({
+  serviceName: "presenter",
+  spanName: "document",
+})(present);

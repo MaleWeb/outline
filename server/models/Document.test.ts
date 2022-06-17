@@ -1,15 +1,17 @@
-import { Document } from "@server/models";
+import Document from "@server/models/Document";
 import {
   buildDocument,
   buildCollection,
   buildTeam,
   buildUser,
+  buildShare,
 } from "@server/test/factories";
 import { flushdb, seed } from "@server/test/support";
 import slugify from "@server/utils/slugify";
 
 beforeEach(() => flushdb());
 beforeEach(jest.resetAllMocks);
+
 describe("#getSummary", () => {
   test("should strip markdown", async () => {
     const document = await buildDocument({
@@ -23,14 +25,15 @@ paragraph 2`,
 
   test("should strip title when no version", async () => {
     const document = await buildDocument({
-      version: null,
+      version: 0,
       text: `# Heading
-      
+
 *paragraph*`,
     });
     expect(document.getSummary()).toBe("paragraph");
   });
 });
+
 describe("#migrateVersion", () => {
   test("should maintain empty paragraph under headings", async () => {
     const document = await buildDocument({
@@ -155,6 +158,7 @@ paragraph`);
 `);
   });
 });
+
 describe("#searchForTeam", () => {
   test("should return search results from public collections", async () => {
     const team = await buildTeam();
@@ -168,10 +172,10 @@ describe("#searchForTeam", () => {
     });
     const { results } = await Document.searchForTeam(team, "test");
     expect(results.length).toBe(1);
-    expect(results[0].document.id).toBe(document.id);
+    expect(results[0].document?.id).toBe(document.id);
   });
 
-  test("should not return search results from private collections", async () => {
+  test("should not return results from private collections without providing collectionId", async () => {
     const team = await buildTeam();
     const collection = await buildCollection({
       permission: null,
@@ -184,6 +188,52 @@ describe("#searchForTeam", () => {
     });
     const { results } = await Document.searchForTeam(team, "test");
     expect(results.length).toBe(0);
+  });
+
+  test("should return results from private collections when collectionId is provided", async () => {
+    const team = await buildTeam();
+    const collection = await buildCollection({
+      permission: null,
+      teamId: team.id,
+    });
+    await buildDocument({
+      teamId: team.id,
+      collectionId: collection.id,
+      title: "test",
+    });
+    const { results } = await Document.searchForTeam(team, "test", {
+      collectionId: collection.id,
+    });
+    expect(results.length).toBe(1);
+  });
+
+  test("should return results from document tree of shared document", async () => {
+    const team = await buildTeam();
+    const collection = await buildCollection({
+      permission: null,
+      teamId: team.id,
+    });
+    const document = await buildDocument({
+      teamId: team.id,
+      collectionId: collection.id,
+      title: "test 1",
+    });
+    await buildDocument({
+      teamId: team.id,
+      collectionId: collection.id,
+      title: "test 2",
+    });
+
+    const share = await buildShare({
+      documentId: document.id,
+      includeChildDocuments: true,
+    });
+
+    const { results } = await Document.searchForTeam(team, "test", {
+      collectionId: collection.id,
+      share,
+    });
+    expect(results.length).toBe(1);
   });
 
   test("should handle no collections", async () => {
@@ -252,6 +302,7 @@ describe("#searchForTeam", () => {
     expect(totalCount).toBe("0");
   });
 });
+
 describe("#searchForUser", () => {
   test("should return search results from collections", async () => {
     const team = await buildTeam();
@@ -270,7 +321,7 @@ describe("#searchForUser", () => {
     });
     const { results } = await Document.searchForUser(user, "test");
     expect(results.length).toBe(1);
-    expect(results[0].document.id).toBe(document.id);
+    expect(results[0].document?.id).toBe(document.id);
   });
 
   test("should handle no collections", async () => {
@@ -352,44 +403,47 @@ describe("#searchForUser", () => {
     expect(totalCount).toBe("0");
   });
 });
+
 describe("#delete", () => {
   test("should soft delete and set last modified", async () => {
-    let document = await buildDocument();
+    const document = await buildDocument();
     const user = await buildUser();
     await document.delete(user.id);
-    document = await Document.findByPk(document.id, {
+
+    const newDocument = await Document.findByPk(document.id, {
       paranoid: false,
     });
-    expect(document.lastModifiedById).toBe(user.id);
-    expect(document.deletedAt).toBeTruthy();
+    expect(newDocument?.lastModifiedById).toBe(user.id);
+    expect(newDocument?.deletedAt).toBeTruthy();
   });
 
   test("should soft delete templates", async () => {
-    let document = await buildDocument({
+    const document = await buildDocument({
       template: true,
     });
     const user = await buildUser();
     await document.delete(user.id);
-    document = await Document.findByPk(document.id, {
+    const newDocument = await Document.findByPk(document.id, {
       paranoid: false,
     });
-    expect(document.lastModifiedById).toBe(user.id);
-    expect(document.deletedAt).toBeTruthy();
+    expect(newDocument?.lastModifiedById).toBe(user.id);
+    expect(newDocument?.deletedAt).toBeTruthy();
   });
 
   test("should soft delete archived", async () => {
-    let document = await buildDocument({
+    const document = await buildDocument({
       archivedAt: new Date(),
     });
     const user = await buildUser();
     await document.delete(user.id);
-    document = await Document.findByPk(document.id, {
+    const newDocument = await Document.findByPk(document.id, {
       paranoid: false,
     });
-    expect(document.lastModifiedById).toBe(user.id);
-    expect(document.deletedAt).toBeTruthy();
+    expect(newDocument?.lastModifiedById).toBe(user.id);
+    expect(newDocument?.deletedAt).toBeTruthy();
   });
 });
+
 describe("#save", () => {
   test("should have empty previousTitles by default", async () => {
     const document = await buildDocument();
@@ -414,14 +468,79 @@ describe("#save", () => {
     expect(document.previousTitles.length).toBe(3);
   });
 });
+
+describe("#getChildDocumentIds", () => {
+  test("should return empty array if no children", async () => {
+    const team = await buildTeam();
+    const user = await buildUser({
+      teamId: team.id,
+    });
+    const collection = await buildCollection({
+      userId: user.id,
+      teamId: team.id,
+    });
+    const document = await buildDocument({
+      userId: user.id,
+      teamId: team.id,
+      collectionId: collection.id,
+      title: "test",
+    });
+    const results = await document.getChildDocumentIds();
+    expect(results.length).toBe(0);
+  });
+
+  test("should return nested child document ids", async () => {
+    const team = await buildTeam();
+    const user = await buildUser({
+      teamId: team.id,
+    });
+    const collection = await buildCollection({
+      userId: user.id,
+      teamId: team.id,
+    });
+    const document = await buildDocument({
+      userId: user.id,
+      teamId: team.id,
+      collectionId: collection.id,
+      title: "test",
+    });
+    const document2 = await buildDocument({
+      userId: user.id,
+      teamId: team.id,
+      collectionId: collection.id,
+      parentDocumentId: document.id,
+      title: "test",
+    });
+    const document3 = await buildDocument({
+      userId: user.id,
+      teamId: team.id,
+      collectionId: collection.id,
+      parentDocumentId: document2.id,
+      title: "test",
+    });
+    const results = await document.getChildDocumentIds();
+    expect(results.length).toBe(2);
+    expect(results[0]).toBe(document2.id);
+    expect(results[1]).toBe(document3.id);
+  });
+});
+
 describe("#findByPk", () => {
   test("should return document when urlId is correct", async () => {
     const { document } = await seed();
     const id = `${slugify(document.title)}-${document.urlId}`;
     const response = await Document.findByPk(id);
-    expect(response.id).toBe(document.id);
+    expect(response?.id).toBe(document.id);
+  });
+
+  test("should return document when urlId is given without the slug prefix", async () => {
+    const { document } = await seed();
+    const id = document.urlId;
+    const response = await Document.findByPk(id);
+    expect(response?.id).toBe(document.id);
   });
 });
+
 describe("tasks", () => {
   test("should consider all the possible checkTtems", async () => {
     const document = await buildDocument({

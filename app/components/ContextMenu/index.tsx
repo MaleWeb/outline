@@ -1,10 +1,17 @@
+import { disableBodyScroll, enableBodyScroll } from "body-scroll-lock";
 import * as React from "react";
+import { useTranslation } from "react-i18next";
 import { Portal } from "react-portal";
 import { Menu } from "reakit/Menu";
-import styled from "styled-components";
+import styled, { DefaultTheme } from "styled-components";
 import breakpoint from "styled-components-breakpoint";
+import { depths } from "@shared/styles";
+import Scrollable from "~/components/Scrollable";
+import useMenuContext from "~/hooks/useMenuContext";
 import useMenuHeight from "~/hooks/useMenuHeight";
 import usePrevious from "~/hooks/usePrevious";
+import useStores from "~/hooks/useStores";
+import useUnmount from "~/hooks/useUnmount";
 import {
   fadeIn,
   fadeAndSlideUp,
@@ -34,27 +41,36 @@ type Props = {
   visible?: boolean;
   placement?: Placement;
   animating?: boolean;
-  children: React.ReactNode;
   unstable_disclosureRef?: React.RefObject<HTMLElement | null>;
   onOpen?: () => void;
   onClose?: () => void;
   hide?: () => void;
 };
 
-export default function ContextMenu({
+const ContextMenu: React.FC<Props> = ({
   children,
   onOpen,
   onClose,
   ...rest
-}: Props) {
+}) => {
   const previousVisible = usePrevious(rest.visible);
   const maxHeight = useMenuHeight(rest.visible, rest.unstable_disclosureRef);
   const backgroundRef = React.useRef<HTMLDivElement>(null);
+  const { ui } = useStores();
+  const { t } = useTranslation();
+  const { setIsMenuOpen } = useMenuContext();
+
+  useUnmount(() => {
+    setIsMenuOpen(false);
+  });
 
   React.useEffect(() => {
     if (rest.visible && !previousVisible) {
       if (onOpen) {
         onOpen();
+      }
+      if (rest["aria-label"] !== t("Submenu")) {
+        setIsMenuOpen(true);
       }
     }
 
@@ -62,8 +78,33 @@ export default function ContextMenu({
       if (onClose) {
         onClose();
       }
+      if (rest["aria-label"] !== t("Submenu")) {
+        setIsMenuOpen(false);
+      }
     }
-  }, [onOpen, onClose, previousVisible, rest.visible]);
+  }, [
+    onOpen,
+    onClose,
+    previousVisible,
+    rest.visible,
+    ui.sidebarCollapsed,
+    setIsMenuOpen,
+    rest,
+    t,
+  ]);
+
+  // We must manually manage scroll lock for iOS support so that the scrollable
+  // element can be passed into body-scroll-lock. See:
+  // https://github.com/ariakit/ariakit/issues/469
+  React.useEffect(() => {
+    const scrollElement = backgroundRef.current;
+    if (rest.visible && scrollElement) {
+      disableBodyScroll(scrollElement);
+    }
+    return () => {
+      scrollElement && enableBodyScroll(scrollElement);
+    };
+  }, [rest.visible]);
 
   // Perf win – don't render anything until the menu has been opened
   if (!rest.visible && !previousVisible) {
@@ -74,7 +115,7 @@ export default function ContextMenu({
   // trigger and the bottom of the window
   return (
     <>
-      <Menu hideOnClickOutside preventBodyScroll {...rest}>
+      <Menu hideOnClickOutside preventBodyScroll={false} {...rest}>
         {(props) => {
           // kind of hacky, but this is an effective way of telling which way
           // the menu will _actually_ be placed when taking into account screen
@@ -90,6 +131,7 @@ export default function ContextMenu({
                 topAnchor={topAnchor}
                 rightAnchor={rightAnchor}
                 ref={backgroundRef}
+                hiddenScrollbars
                 style={
                   maxHeight && topAnchor
                     ? {
@@ -111,7 +153,9 @@ export default function ContextMenu({
       )}
     </>
   );
-}
+};
+
+export default ContextMenu;
 
 export const Backdrop = styled.div`
   animation: ${fadeIn} 200ms ease-in-out;
@@ -121,7 +165,7 @@ export const Backdrop = styled.div`
   right: 0;
   bottom: 0;
   background: ${(props) => props.theme.backdrop};
-  z-index: ${(props) => props.theme.depths.menu - 1};
+  z-index: ${depths.menu - 1};
 
   ${breakpoint("tablet")`
     display: none;
@@ -130,8 +174,12 @@ export const Backdrop = styled.div`
 
 export const Position = styled.div`
   position: absolute;
-  z-index: ${(props) => props.theme.depths.menu};
+  z-index: ${depths.menu};
 
+  /*
+   * overrides make mobile-first coding style challenging
+   * so we explicitly define mobile breakpoint here
+   */
   ${breakpoint("mobile", "tablet")`
     position: fixed !important;
     transform: none !important;
@@ -142,10 +190,13 @@ export const Position = styled.div`
   `};
 `;
 
-export const Background = styled.div<{
+type BackgroundProps = {
   topAnchor?: boolean;
   rightAnchor?: boolean;
-}>`
+  theme: DefaultTheme;
+};
+
+export const Background = styled(Scrollable)<BackgroundProps>`
   animation: ${mobileContextMenu} 200ms ease;
   transform-origin: 50% 100%;
   max-width: 100%;
@@ -154,8 +205,6 @@ export const Background = styled.div<{
   padding: 6px 0;
   min-width: 180px;
   min-height: 44px;
-  overflow: hidden;
-  overflow-y: auto;
   max-height: 75vh;
   pointer-events: all;
   font-weight: normal;
@@ -165,11 +214,12 @@ export const Background = styled.div<{
   }
 
   ${breakpoint("tablet")`
-    animation: ${(props: any) =>
+    animation: ${(props: BackgroundProps) =>
       props.topAnchor ? fadeAndSlideDown : fadeAndSlideUp} 200ms ease;
-    transform-origin: ${(props: any) => (props.rightAnchor ? "75%" : "25%")} 0;
+    transform-origin: ${(props: BackgroundProps) =>
+      props.rightAnchor ? "75%" : "25%"} 0;
     max-width: 276px;
-    background: ${(props: any) => props.theme.menuBackground};
-    box-shadow: ${(props: any) => props.theme.menuShadow};
+    background: ${(props: BackgroundProps) => props.theme.menuBackground};
+    box-shadow: ${(props: BackgroundProps) => props.theme.menuShadow};
   `};
 `;

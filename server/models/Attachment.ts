@@ -1,88 +1,96 @@
 import path from "path";
-import { deleteFromS3, getFileByKey } from "@server/utils/s3";
-import { DataTypes, sequelize } from "../sequelize";
+import {
+  BeforeDestroy,
+  BelongsTo,
+  Column,
+  Default,
+  ForeignKey,
+  IsIn,
+  Table,
+  DataType,
+} from "sequelize-typescript";
+import { publicS3Endpoint, deleteFromS3, getFileByKey } from "@server/utils/s3";
+import Document from "./Document";
+import Team from "./Team";
+import User from "./User";
+import IdModel from "./base/IdModel";
+import Fix from "./decorators/Fix";
 
-const Attachment = sequelize.define(
-  "attachment",
-  {
-    id: {
-      type: DataTypes.UUID,
-      defaultValue: DataTypes.UUIDV4,
-      primaryKey: true,
-    },
-    key: {
-      type: DataTypes.STRING,
-      allowNull: false,
-    },
-    url: {
-      type: DataTypes.STRING,
-      allowNull: false,
-    },
-    contentType: {
-      type: DataTypes.STRING,
-      allowNull: false,
-    },
-    size: {
-      type: DataTypes.BIGINT,
-      allowNull: false,
-    },
-    acl: {
-      type: DataTypes.STRING,
-      allowNull: false,
-      defaultValue: "public-read",
-      validate: {
-        isIn: [["private", "public-read"]],
-      },
-    },
-  },
-  {
-    getterMethods: {
-      name: function () {
-        return path.parse(this.key).base;
-      },
-      redirectUrl: function () {
-        return `/api/attachments.redirect?id=${this.id}`;
-      },
-      isPrivate: function () {
-        return this.acl === "private";
-      },
-      buffer: function () {
-        return getFileByKey(this.key);
-      },
-    },
+@Table({ tableName: "attachments", modelName: "attachment" })
+@Fix
+class Attachment extends IdModel {
+  @Column
+  key: string;
+
+  @Column
+  url: string;
+
+  @Column
+  contentType: string;
+
+  @Column(DataType.BIGINT)
+  size: number;
+
+  @Default("public-read")
+  @IsIn([["private", "public-read"]])
+  @Column
+  acl: string;
+
+  // getters
+
+  get name() {
+    return path.parse(this.key).base;
   }
-);
 
-Attachment.findAllInBatches = async (
-  // @ts-expect-error ts-migrate(7006) FIXME: Parameter 'query' implicitly has an 'any' type.
-  query,
-  callback: (
-    // @ts-expect-error ts-migrate(2749) FIXME: 'Attachment' refers to a value, but is being used ... Remove this comment to see the full error message
-    attachments: Array<Attachment>,
-    query: Record<string, any>
-  ) => Promise<void>
-) => {
-  if (!query.offset) query.offset = 0;
-  if (!query.limit) query.limit = 10;
-  let results;
+  get redirectUrl() {
+    return `/api/attachments.redirect?id=${this.id}`;
+  }
 
-  do {
-    results = await Attachment.findAll(query);
-    await callback(results, query);
-    query.offset += query.limit;
-  } while (results.length >= query.limit);
-};
+  get isPrivate() {
+    return this.acl === "private";
+  }
 
-// @ts-expect-error ts-migrate(7006) FIXME: Parameter 'model' implicitly has an 'any' type.
-Attachment.beforeDestroy(async (model) => {
-  await deleteFromS3(model.key);
-});
+  get buffer() {
+    return getFileByKey(this.key);
+  }
 
-// @ts-expect-error ts-migrate(7006) FIXME: Parameter 'models' implicitly has an 'any' type.
-Attachment.associate = (models) => {
-  Attachment.belongsTo(models.Team);
-  Attachment.belongsTo(models.Document);
-  Attachment.belongsTo(models.User);
-};
+  /**
+   * Use this instead of url which will be deleted soon, the column is unneccessary
+   * and was not updated with the migraiton to the new s3 bucket.
+   */
+  get canonicalUrl() {
+    return `${publicS3Endpoint()}/${this.key}`;
+  }
+
+  // hooks
+
+  @BeforeDestroy
+  static async deleteAttachmentFromS3(model: Attachment) {
+    await deleteFromS3(model.key);
+  }
+
+  // associations
+
+  @BelongsTo(() => Team, "teamId")
+  team: Team;
+
+  @ForeignKey(() => Team)
+  @Column(DataType.UUID)
+  teamId: string;
+
+  @BelongsTo(() => Document, "documentId")
+  document: Document;
+
+  @ForeignKey(() => Document)
+  @Column(DataType.UUID)
+  documentId: string | null;
+
+  @BelongsTo(() => User, "userId")
+  user: User;
+
+  @ForeignKey(() => User)
+  @Column(DataType.UUID)
+  userId: string;
+}
 
 export default Attachment;

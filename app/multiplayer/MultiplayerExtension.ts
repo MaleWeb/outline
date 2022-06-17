@@ -1,13 +1,13 @@
-import { keymap } from "prosemirror-keymap";
-import { Extension } from "rich-markdown-editor";
 import {
   ySyncPlugin,
   yCursorPlugin,
   yUndoPlugin,
   undo,
   redo,
-} from "y-prosemirror";
+} from "@getoutline/y-prosemirror";
+import { keymap } from "prosemirror-keymap";
 import * as Y from "yjs";
+import { Extension } from "~/editor";
 
 export default class MultiplayerExtension extends Extension {
   get name() {

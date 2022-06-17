@@ -1,12 +1,13 @@
 import { addDays, differenceInDays } from "date-fns";
 import { floor } from "lodash";
-import { action, computed, observable } from "mobx";
+import { action, autorun, computed, observable } from "mobx";
 import parseTitle from "@shared/utils/parseTitle";
 import unescape from "@shared/utils/unescape";
 import DocumentsStore from "~/stores/DocumentsStore";
-import BaseModel from "~/models/BaseModel";
 import User from "~/models/User";
 import { NavigationNode } from "~/types";
+import Storage from "~/utils/Storage";
+import ParanoidModel from "./ParanoidModel";
 import View from "./View";
 import Field from "./decorators/Field";
 
@@ -17,12 +18,29 @@ type SaveOptions = {
   lastRevision?: number;
 };
 
-export default class Document extends BaseModel {
+export default class Document extends ParanoidModel {
+  constructor(fields: Record<string, any>, store: DocumentsStore) {
+    super(fields, store);
+
+    if (this.isPersistedOnce && this.isFromTemplate) {
+      this.title = "";
+    }
+
+    this.embedsDisabled = Storage.get(`embedsDisabled-${this.id}`) ?? false;
+
+    autorun(() => {
+      Storage.set(
+        `embedsDisabled-${this.id}`,
+        this.embedsDisabled ? true : undefined
+      );
+    });
+  }
+
   @observable
   isSaving = false;
 
   @observable
-  embedsDisabled = false;
+  embedsDisabled: boolean;
 
   @observable
   lastViewedAt: string | undefined;
@@ -63,19 +81,13 @@ export default class Document extends BaseModel {
 
   collaboratorIds: string[];
 
-  createdAt: string;
-
   createdBy: User;
-
-  updatedAt: string;
 
   updatedBy: User;
 
   publishedAt: string | undefined;
 
   archivedAt: string;
-
-  deletedAt: string | undefined;
 
   url: string;
 
@@ -88,14 +100,7 @@ export default class Document extends BaseModel {
 
   revision: number;
 
-  constructor(fields: Record<string, any>, store: DocumentsStore) {
-    super(fields, store);
-
-    if (this.isPersistedOnce && this.isFromTemplate) {
-      this.title = "";
-    }
-  }
-
+  @computed
   get emoji() {
     const { emoji } = parseTitle(this.title);
     return emoji;
@@ -109,7 +114,7 @@ export default class Document extends BaseModel {
   @computed
   get dir(): "rtl" | "ltr" {
     const element = document.createElement("p");
-    element.innerHTML = this.title;
+    element.innerText = this.title;
     element.style.visibility = "hidden";
     element.dir = "auto";
 
@@ -146,7 +151,9 @@ export default class Document extends BaseModel {
 
   @computed
   get isStarred(): boolean {
-    return !!this.store.starredIds.get(this.id);
+    return !!this.store.rootStore.stars.orderedData.find(
+      (star) => star.documentId === this.id
+    );
   }
 
   @computed
@@ -167,6 +174,11 @@ export default class Document extends BaseModel {
   @computed
   get isDraft(): boolean {
     return !this.publishedAt;
+  }
+
+  @computed
+  get hasEmptyTitle(): boolean {
+    return this.title === "";
   }
 
   @computed
@@ -205,6 +217,13 @@ export default class Document extends BaseModel {
     }
 
     return floor((this.tasks.completed / this.tasks.total) * 100);
+  }
+
+  @action
+  updateTasks(total: number, completed: number) {
+    if (total !== this.tasks.total || completed !== this.tasks.completed) {
+      this.tasks = { total, completed };
+    }
   }
 
   @action
@@ -257,7 +276,7 @@ export default class Document extends BaseModel {
   };
 
   @action
-  star = () => {
+  star = async () => {
     return this.store.star(this);
   };
 
@@ -272,6 +291,8 @@ export default class Document extends BaseModel {
     if (this.isDeleted) {
       return;
     }
+
+    this.lastViewedAt = new Date().toString();
 
     return this.store.rootStore.views.create({
       documentId: this.id,
@@ -295,7 +316,9 @@ export default class Document extends BaseModel {
       lastRevision?: number;
     }
   ) => {
-    if (this.isSaving) return this;
+    if (this.isSaving) {
+      return this;
+    }
     this.isSaving = true;
 
     try {
@@ -322,7 +345,9 @@ export default class Document extends BaseModel {
 
   @action
   save = async (options?: SaveOptions | undefined) => {
-    if (this.isSaving) return this;
+    if (this.isSaving) {
+      return this;
+    }
     const isCreating = !this.id;
     this.isSaving = true;
 
@@ -419,7 +444,9 @@ export default class Document extends BaseModel {
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     // Firefox support requires the anchor tag be in the DOM to trigger the dl
-    if (document.body) document.body.appendChild(a);
+    if (document.body) {
+      document.body.appendChild(a);
+    }
     a.href = url;
     a.download = `${this.titleWithDefault}.md`;
     a.click();

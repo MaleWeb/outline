@@ -1,15 +1,18 @@
+import path from "path";
 import { FileOperation } from "@server/models";
-import { presentCollection, presentUser } from ".";
+import { presentUser } from ".";
 
-// @ts-expect-error ts-migrate(2749) FIXME: 'FileOperation' refers to a value, but is being us... Remove this comment to see the full error message
 export default function present(data: FileOperation) {
   return {
     id: data.id,
     type: data.type,
+    name: data.collection?.name || path.basename(data.key || ""),
     state: data.state,
-    collection: data.collection ? presentCollection(data.collection) : null,
+    error: data.error,
     size: data.size,
+    collectionId: data.collectionId,
     user: presentUser(data.user),
     createdAt: data.createdAt,
+    updatedAt: data.updatedAt,
   };
 }

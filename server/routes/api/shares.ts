@@ -1,38 +1,36 @@
 import Router from "koa-router";
-import Sequelize from "sequelize";
+import { Op, WhereOptions } from "sequelize";
 import { NotFoundError } from "@server/errors";
 import auth from "@server/middlewares/authentication";
 import { Document, User, Event, Share, Team, Collection } from "@server/models";
-import policy from "@server/policies";
+import { authorize } from "@server/policies";
 import { presentShare, presentPolicies } from "@server/presenters";
 import { assertUuid, assertSort, assertPresent } from "@server/validation";
 import pagination from "./middlewares/pagination";
 
-const Op = Sequelize.Op;
-const { authorize } = policy;
 const router = new Router();
 
 router.post("shares.info", auth(), async (ctx) => {
   const { id, documentId, apiVersion } = ctx.body;
   assertUuid(id || documentId, "id or documentId is required");
 
-  const user = ctx.state.user;
+  const { user } = ctx.state;
   const shares = [];
   const share = await Share.scope({
-    method: ["withCollection", user.id],
+    method: ["withCollectionPermissions", user.id],
   }).findOne({
     where: id
       ? {
           id,
           revokedAt: {
-            [Op.eq]: null,
+            [Op.is]: null,
           },
         }
       : {
           documentId,
           teamId: user.teamId,
           revokedAt: {
-            [Op.eq]: null,
+            [Op.is]: null,
           },
         },
   });
@@ -60,19 +58,23 @@ router.post("shares.info", auth(), async (ctx) => {
   }
 
   if (documentId) {
-    const document = await Document.scope("withCollection").findByPk(
-      documentId
-    );
+    const document = await Document.unscoped()
+      .scope("withCollection")
+      .findOne({
+        where: {
+          id: documentId,
+        },
+      });
     const parentIds = document?.collection?.getDocumentParents(documentId);
     const parentShare = parentIds
       ? await Share.scope({
-          method: ["withCollection", user.id],
+          method: ["withCollectionPermissions", user.id],
         }).findOne({
           where: {
             documentId: parentIds,
             teamId: user.teamId,
             revokedAt: {
-              [Op.eq]: null,
+              [Op.is]: null,
             },
             includeChildDocuments: true,
             published: true,
@@ -102,16 +104,18 @@ router.post("shares.info", auth(), async (ctx) => {
 router.post("shares.list", auth(), pagination(), async (ctx) => {
   let { direction } = ctx.body;
   const { sort = "updatedAt" } = ctx.body;
-  if (direction !== "ASC") direction = "DESC";
+  if (direction !== "ASC") {
+    direction = "DESC";
+  }
   assertSort(sort, Share);
 
-  const user = ctx.state.user;
-  const where = {
+  const { user } = ctx.state;
+  const where: WhereOptions<Share> = {
     teamId: user.teamId,
     userId: user.id,
     published: true,
     revokedAt: {
-      [Op.eq]: null,
+      [Op.is]: null,
     },
   };
 
@@ -120,44 +124,48 @@ router.post("shares.list", auth(), pagination(), async (ctx) => {
   }
 
   const collectionIds = await user.collectionIds();
-  const shares = await Share.findAll({
-    where,
-    order: [[sort, direction]],
-    include: [
-      {
-        model: Document,
-        required: true,
-        paranoid: true,
-        as: "document",
-        where: {
-          collectionId: collectionIds,
-        },
-        include: [
-          {
-            model: Collection.scope({
-              method: ["withMembership", user.id],
-            }),
-            as: "collection",
+
+  const [shares, total] = await Promise.all([
+    Share.findAll({
+      where,
+      order: [[sort, direction]],
+      include: [
+        {
+          model: Document,
+          required: true,
+          paranoid: true,
+          as: "document",
+          where: {
+            collectionId: collectionIds,
           },
-        ],
-      },
-      {
-        model: User,
-        required: true,
-        as: "user",
-      },
-      {
-        model: Team,
-        required: true,
-        as: "team",
-      },
-    ],
-    offset: ctx.state.pagination.offset,
-    limit: ctx.state.pagination.limit,
-  });
+          include: [
+            {
+              model: Collection.scope({
+                method: ["withMembership", user.id],
+              }),
+              as: "collection",
+            },
+          ],
+        },
+        {
+          model: User,
+          required: true,
+          as: "user",
+        },
+        {
+          model: Team,
+          required: true,
+          as: "team",
+        },
+      ],
+      offset: ctx.state.pagination.offset,
+      limit: ctx.state.pagination.limit,
+    }),
+    Share.count({ where }),
+  ]);
+
   ctx.body = {
-    pagination: ctx.state.pagination,
-    // @ts-expect-error ts-migrate(7006) FIXME: Parameter 'share' implicitly has an 'any' type.
+    pagination: { ...ctx.state.pagination, total },
     data: shares.map((share) => presentShare(share, user.isAdmin)),
     policies: presentPolicies(user, shares),
   };
@@ -170,10 +178,12 @@ router.post("shares.update", auth(), async (ctx) => {
   const { user } = ctx.state;
   const team = await Team.findByPk(user.teamId);
   authorize(user, "share", team);
+
   // fetch the share with document and collection.
   const share = await Share.scope({
-    method: ["withCollection", user.id],
+    method: ["withCollectionPermissions", user.id],
   }).findByPk(id);
+
   authorize(user, "update", share);
 
   if (published !== undefined) {
@@ -203,6 +213,7 @@ router.post("shares.update", auth(), async (ctx) => {
     },
     ip: ctx.request.ip,
   });
+
   ctx.body = {
     data: presentShare(share, user.isAdmin),
     policies: presentPolicies(user, [share]),
@@ -213,13 +224,15 @@ router.post("shares.create", auth(), async (ctx) => {
   const { documentId } = ctx.body;
   assertPresent(documentId, "documentId is required");
 
-  const user = ctx.state.user;
+  const { user } = ctx.state;
   const document = await Document.findByPk(documentId, {
     userId: user.id,
   });
-  const team = await Team.findByPk(user.teamId);
+
   // user could be creating the share link to share with team members
   authorize(user, "read", document);
+
+  const team = await Team.findByPk(user.teamId);
 
   const [share, isCreated] = await Share.findOrCreate({
     where: {
@@ -247,9 +260,12 @@ router.post("shares.create", auth(), async (ctx) => {
     });
   }
 
-  share.team = team;
+  if (team) {
+    share.team = team;
+  }
   share.user = user;
   share.document = document;
+
   ctx.body = {
     data: presentShare(share),
     policies: presentPolicies(user, [share]),
@@ -260,14 +276,15 @@ router.post("shares.revoke", auth(), async (ctx) => {
   const { id } = ctx.body;
   assertUuid(id, "id is required");
 
-  const user = ctx.state.user;
+  const { user } = ctx.state;
   const share = await Share.findByPk(id);
-  authorize(user, "revoke", share);
-  const document = await Document.findByPk(share.documentId);
 
-  if (!document) {
+  if (!share?.document) {
     throw NotFoundError();
   }
+
+  authorize(user, "revoke", share);
+  const { document } = share;
 
   await share.revoke(user.id);
   await Event.create({
@@ -282,6 +299,7 @@ router.post("shares.revoke", auth(), async (ctx) => {
     },
     ip: ctx.request.ip,
   });
+
   ctx.body = {
     success: true,
   };

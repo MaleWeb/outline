@@ -1,12 +1,13 @@
 import invariant from "invariant";
-import Sequelize from "sequelize";
-import { Collection, Team, User } from "@server/models";
+import { UniqueConstraintError } from "sequelize";
+import WelcomeEmail from "@server/emails/templates/WelcomeEmail";
 import {
   AuthenticationError,
   EmailAuthenticationRequiredError,
   AuthenticationProviderDisabledError,
-} from "../errors";
-import mailer from "../mailer";
+} from "@server/errors";
+import { APM } from "@server/logging/tracing";
+import { Collection, Team, User } from "@server/models";
 import teamCreator from "./teamCreator";
 import userCreator from "./userCreator";
 
@@ -15,14 +16,14 @@ type Props = {
   user: {
     name: string;
     email: string;
-    avatarUrl?: string;
+    avatarUrl?: string | null;
     username?: string;
   };
   team: {
     name: string;
     domain?: string;
     subdomain: string;
-    avatarUrl?: string;
+    avatarUrl?: string | null;
   };
   authenticationProvider: {
     name: string;
@@ -33,19 +34,18 @@ type Props = {
     scopes: string[];
     accessToken?: string;
     refreshToken?: string;
+    expiresIn?: number;
   };
 };
 
 export type AccountProvisionerResult = {
-  // @ts-expect-error ts-migrate(2749) FIXME: 'User' refers to a value, but is being used as a t... Remove this comment to see the full error message
   user: User;
-  // @ts-expect-error ts-migrate(2749) FIXME: 'Team' refers to a value, but is being used as a t... Remove this comment to see the full error message
   team: Team;
   isNewTeam: boolean;
   isNewUser: boolean;
 };
 
-export default async function accountProvisioner({
+async function accountProvisioner({
   ip,
   user: userParams,
   team: teamParams,
@@ -84,13 +84,16 @@ export default async function accountProvisioner({
       ip,
       authentication: {
         ...authenticationParams,
+        expiresAt: authenticationParams.expiresIn
+          ? new Date(Date.now() + authenticationParams.expiresIn * 1000)
+          : undefined,
         authenticationProviderId: authenticationProvider.id,
       },
     });
     const { isNewUser, user } = result;
 
     if (isNewUser) {
-      await mailer.sendTemplate("welcome", {
+      await WelcomeEmail.schedule({
         to: user.email,
         teamUrl: team.url,
       });
@@ -123,7 +126,7 @@ export default async function accountProvisioner({
       isNewTeam,
     };
   } catch (err) {
-    if (err instanceof Sequelize.UniqueConstraintError) {
+    if (err instanceof UniqueConstraintError) {
       const exists = await User.findOne({
         where: {
           email: userParams.email,
@@ -144,3 +147,8 @@ export default async function accountProvisioner({
     throw err;
   }
 }
+
+export default APM.traceFunction({
+  serviceName: "command",
+  spanName: "accountProvisioner",
+})(accountProvisioner);

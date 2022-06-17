@@ -3,8 +3,7 @@ import env from "./env";
 
 export function AuthenticationError(
   message = "Invalid authentication",
-  // @ts-expect-error ts-migrate(2322) FIXME: Type 'string | undefined' is not assignable to typ... Remove this comment to see the full error message
-  redirectUrl: string = env.URL
+  redirectUrl = env.URL
 ) {
   return httpErrors(401, message, {
     redirectUrl,
@@ -20,6 +19,22 @@ export function AuthorizationError(
   });
 }
 
+export function InviteRequiredError(
+  message = "You need an invite to join this team"
+) {
+  return httpErrors(403, message, {
+    id: "invite_required",
+  });
+}
+
+export function DomainNotAllowedError(
+  message = "The domain is not allowed for this team"
+) {
+  return httpErrors(403, message, {
+    id: "domain_not_allowed",
+  });
+}
+
 export function AdminRequiredError(
   message = "An admin role is required to access this resource"
 ) {
@@ -28,7 +43,11 @@ export function AdminRequiredError(
   });
 }
 
-export function UserSuspendedError({ adminEmail }: { adminEmail: string }) {
+export function UserSuspendedError({
+  adminEmail,
+}: {
+  adminEmail: string | undefined;
+}) {
   return httpErrors(403, "Your access has been suspended by the team admin", {
     id: "user_suspended",
     errorData: {
@@ -93,8 +112,7 @@ export function MaximumTeamsError(
 
 export function EmailAuthenticationRequiredError(
   message = "User must authenticate with email",
-  // @ts-expect-error ts-migrate(2322) FIXME: Type 'string | undefined' is not assignable to typ... Remove this comment to see the full error message
-  redirectUrl: string = env.URL
+  redirectUrl = env.URL
 ) {
   return httpErrors(400, message, {
     redirectUrl,
@@ -118,14 +136,6 @@ export function GoogleWorkspaceRequiredError(
   });
 }
 
-export function GoogleWorkspaceInvalidError(
-  message = "Google Workspace is invalid"
-) {
-  return httpErrors(400, message, {
-    id: "hd_not_allowed",
-  });
-}
-
 export function OIDCMalformedUserInfoError(
   message = "User profile information malformed"
 ) {
@@ -136,8 +146,7 @@ export function OIDCMalformedUserInfoError(
 
 export function AuthenticationProviderDisabledError(
   message = "Authentication method has been disabled by an admin",
-  // @ts-expect-error ts-migrate(2322) FIXME: Type 'string | undefined' is not assignable to typ... Remove this comment to see the full error message
-  redirectUrl: string = env.URL
+  redirectUrl = env.URL
 ) {
   return httpErrors(400, message, {
     redirectUrl,

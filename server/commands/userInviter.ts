@@ -1,7 +1,11 @@
+import invariant from "invariant";
 import { uniqBy } from "lodash";
 import { Role } from "@shared/types";
+import InviteEmail from "@server/emails/templates/InviteEmail";
+import env from "@server/env";
+import Logger from "@server/logging/Logger";
 import { User, Event, Team } from "@server/models";
-import mailer from "../mailer";
+import { UserFlag } from "@server/models/User";
 
 type Invite = {
   name: string;
@@ -14,16 +18,16 @@ export default async function userInviter({
   invites,
   ip,
 }: {
-  // @ts-expect-error ts-migrate(2749) FIXME: 'User' refers to a value, but is being used as a t... Remove this comment to see the full error message
   user: User;
   invites: Invite[];
   ip: string;
 }): Promise<{
   sent: Invite[];
-  // @ts-expect-error ts-migrate(2749) FIXME: 'User' refers to a value, but is being used as a t... Remove this comment to see the full error message
   users: User[];
 }> {
   const team = await Team.findByPk(user.teamId);
+  invariant(team, "team not found");
+
   // filter out empties and obvious non-emails
   const compactedInvites = invites.filter(
     (invite) => !!invite.email.trim() && invite.email.match("@")
@@ -44,7 +48,6 @@ export default async function userInviter({
       email: emails,
     },
   });
-  // @ts-expect-error ts-migrate(7006) FIXME: Parameter 'user' implicitly has an 'any' type.
   const existingEmails = existingUsers.map((user) => user.email);
   const filteredInvites = normalizedInvites.filter(
     (invite) => !existingEmails.includes(invite.email)
@@ -60,6 +63,10 @@ export default async function userInviter({
       service: null,
       isAdmin: invite.role === "admin",
       isViewer: invite.role === "viewer",
+      invitedById: user.id,
+      flags: {
+        [UserFlag.InviteSent]: 1,
+      },
     });
     users.push(newUser);
     await Event.create({
@@ -73,7 +80,8 @@ export default async function userInviter({
       },
       ip,
     });
-    await mailer.sendTemplate("invite", {
+
+    await InviteEmail.schedule({
       to: invite.email,
       name: invite.name,
       actorName: user.name,
@@ -81,6 +89,15 @@ export default async function userInviter({
       teamName: team.name,
       teamUrl: team.url,
     });
+
+    if (env.ENVIRONMENT === "development") {
+      Logger.info(
+        "email",
+        `Sign in immediately: ${
+          env.URL
+        }/auth/email.callback?token=${newUser.getEmailSigninToken()}`
+      );
+    }
   }
 
   return {

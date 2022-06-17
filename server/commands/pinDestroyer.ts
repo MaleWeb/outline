@@ -1,12 +1,11 @@
 import { Transaction } from "sequelize";
-import { Event } from "@server/models";
-import { sequelize } from "@server/sequelize";
+import { Event, Pin, User } from "@server/models";
 
 type Props = {
   /** The user destroying the pin */
-  user: any;
+  user: User;
   /** The pin to destroy */
-  pin: any;
+  pin: Pin;
   /** The IP address of the user creating the pin */
   ip: string;
   /** Optional existing transaction */
@@ -24,31 +23,22 @@ export default async function pinDestroyer({
   user,
   pin,
   ip,
-  transaction: t,
-}: Props): Promise<any> {
-  const transaction = t || (await sequelize.transaction());
+  transaction,
+}: Props): Promise<Pin> {
+  await Event.create(
+    {
+      name: "pins.delete",
+      modelId: pin.id,
+      teamId: user.teamId,
+      actorId: user.id,
+      documentId: pin.documentId,
+      collectionId: pin.collectionId,
+      ip,
+    },
+    { transaction }
+  );
 
-  try {
-    await Event.create(
-      {
-        name: "pins.delete",
-        modelId: pin.id,
-        teamId: user.teamId,
-        actorId: user.id,
-        documentId: pin.documentId,
-        collectionId: pin.collectionId,
-        ip,
-      },
-      { transaction }
-    );
-
-    await pin.destroy({ transaction });
-
-    await transaction.commit();
-  } catch (err) {
-    await transaction.rollback();
-    throw err;
-  }
+  await pin.destroy({ transaction });
 
   return pin;
 }

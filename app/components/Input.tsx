@@ -38,6 +38,13 @@ const RealInput = styled.input<{ hasIcon?: boolean }>`
     color: ${(props) => props.theme.placeholder};
   }
 
+  &:-webkit-autofill,
+  &:-webkit-autofill:hover,
+  &:-webkit-autofill:focus {
+    -webkit-box-shadow: 0 0 0px 1000px ${(props) => props.theme.background}
+      inset;
+  }
+
   &::-webkit-search-cancel-button {
     -webkit-appearance: none;
   }
@@ -88,6 +95,7 @@ export const Outline = styled(Flex)<{
   font-weight: normal;
   align-items: center;
   overflow: hidden;
+  background: ${(props) => props.theme.background};
 `;
 
 export const LabelText = styled.div`
@@ -96,7 +104,7 @@ export const LabelText = styled.div`
   display: inline-block;
 `;
 
-export type Props = {
+export type Props = Omit<React.HTMLAttributes<HTMLInputElement>, "onChange"> & {
   type?: "text" | "email" | "checkbox" | "search" | "textarea";
   value?: string;
   label?: string;
@@ -107,6 +115,7 @@ export type Props = {
   margin?: string | number;
   icon?: React.ReactNode;
   name?: string;
+  pattern?: string;
   minLength?: number;
   maxLength?: number;
   autoFocus?: boolean;
@@ -118,6 +127,7 @@ export type Props = {
   onChange?: (
     ev: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>
   ) => unknown;
+  innerRef?: React.RefObject<HTMLInputElement | HTMLTextAreaElement>;
   onKeyDown?: (ev: React.KeyboardEvent<HTMLInputElement>) => unknown;
   onFocus?: (ev: React.SyntheticEvent) => unknown;
   onBlur?: (ev: React.SyntheticEvent) => unknown;
@@ -125,7 +135,7 @@ export type Props = {
 
 @observer
 class Input extends React.Component<Props> {
-  input = React.createRef<HTMLInputElement | HTMLTextAreaElement>();
+  input = this.props.innerRef;
 
   @observable
   focused = false;
@@ -145,10 +155,6 @@ class Input extends React.Component<Props> {
       this.props.onFocus(ev);
     }
   };
-
-  focus() {
-    this.input.current?.focus();
-  }
 
   render() {
     const {

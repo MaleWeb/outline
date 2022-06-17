@@ -2,13 +2,14 @@ import * as Sentry from "@sentry/react";
 import invariant from "invariant";
 import { observable, action, computed, autorun, runInAction } from "mobx";
 import { getCookie, setCookie, removeCookie } from "tiny-cookie";
+import { getCookieDomain, parseDomain } from "@shared/utils/domains";
 import RootStore from "~/stores/RootStore";
 import Policy from "~/models/Policy";
 import Team from "~/models/Team";
 import User from "~/models/User";
 import env from "~/env";
 import { client } from "~/utils/ApiClient";
-import { getCookieDomain } from "~/utils/domains";
+import Storage from "~/utils/Storage";
 
 const AUTH_STORE = "AUTH_STORE";
 const NO_REDIRECT_PATHS = ["/", "/create", "/home"];
@@ -25,7 +26,7 @@ type Provider = {
   authUrl: string;
 };
 
-type Config = {
+export type Config = {
   name?: string;
   hostname?: string;
   providers: Provider[];
@@ -64,23 +65,15 @@ export default class AuthStore {
   constructor(rootStore: RootStore) {
     this.rootStore = rootStore;
     // attempt to load the previous state of this store from localstorage
-    let data: PersistedData = {};
-
-    try {
-      data = JSON.parse(localStorage.getItem(AUTH_STORE) || "{}");
-    } catch (_) {
-      // no-op Safari private mode
-    }
+    const data: PersistedData = Storage.get(AUTH_STORE) || {};
 
     this.rehydrate(data);
+
     // persists this entire store to localstorage whenever any keys are changed
     autorun(() => {
-      try {
-        localStorage.setItem(AUTH_STORE, this.asJson);
-      } catch (_) {
-        // no-op Safari private mode
-      }
+      Storage.set(AUTH_STORE, this.asJson);
     });
+
     // listen to the localstorage value changing in other tabs to react to
     // signin/signout events in other tabs and follow suite.
     window.addEventListener("storage", (event) => {
@@ -89,7 +82,9 @@ export default class AuthStore {
           event.newValue
         );
         // data may be null if key is deleted in localStorage
-        if (!data) return;
+        if (!data) {
+          return;
+        }
 
         // If we're not signed in then hydrate from the received data, otherwise if
         // we are signed in and the received data contains no user then sign out
@@ -131,18 +126,18 @@ export default class AuthStore {
   }
 
   @computed
-  get asJson(): string {
-    return JSON.stringify({
+  get asJson() {
+    return {
       user: this.user,
       team: this.team,
       policies: this.policies,
-    });
+    };
   }
 
   @action
   fetchConfig = async () => {
     const res = await client.post("/auth.config");
-    invariant(res && res.data, "Config not available");
+    invariant(res?.data, "Config not available");
     this.config = res.data;
   };
 
@@ -150,7 +145,7 @@ export default class AuthStore {
   fetch = async () => {
     try {
       const res = await client.post("/auth.info");
-      invariant(res && res.data, "Auth not available");
+      invariant(res?.data, "Auth not available");
       runInAction("AuthStore#fetch", () => {
         this.addPolicies(res.policies);
         const { user, team } = res.data;
@@ -165,6 +160,23 @@ export default class AuthStore {
             scope.setExtra("team", team.name);
             scope.setExtra("teamId", team.id);
           });
+        }
+
+        // Redirect to the correct custom domain or team subdomain if needed
+        // Occurs when the (sub)domain is changed in admin and the user hits an old url
+        const { hostname, pathname } = window.location;
+
+        if (this.team.domain) {
+          if (this.team.domain !== hostname) {
+            window.location.href = `${team.url}${pathname}`;
+            return;
+          }
+        } else if (
+          env.SUBDOMAINS_ENABLED &&
+          parseDomain(hostname).teamSubdomain !== (team.subdomain ?? "")
+        ) {
+          window.location.href = `${team.url}${pathname}`;
+          return;
         }
 
         // If we came from a redirect then send the user immediately there
@@ -188,9 +200,7 @@ export default class AuthStore {
 
   @action
   deleteUser = async () => {
-    await client.post(`/users.delete`, {
-      confirmation: true,
-    });
+    await client.post(`/users.delete`);
     runInAction("AuthStore#updateUser", () => {
       this.user = null;
       this.team = null;
@@ -208,7 +218,7 @@ export default class AuthStore {
 
     try {
       const res = await client.post(`/users.update`, params);
-      invariant(res && res.data, "User response not available");
+      invariant(res?.data, "User response not available");
       runInAction("AuthStore#updateUser", () => {
         this.addPolicies(res.policies);
         this.user = new User(res.data, this);
@@ -224,13 +234,14 @@ export default class AuthStore {
     avatarUrl?: string | null | undefined;
     sharing?: boolean;
     collaborativeEditing?: boolean;
+    defaultCollectionId?: string | null;
     subdomain?: string | null | undefined;
   }) => {
     this.isSaving = true;
 
     try {
       const res = await client.post(`/team.update`, params);
-      invariant(res && res.data, "Team response not available");
+      invariant(res?.data, "Team response not available");
       runInAction("AuthStore#updateTeam", () => {
         this.addPolicies(res.policies);
         this.team = new Team(res.data, this);
@@ -242,15 +253,18 @@ export default class AuthStore {
 
   @action
   logout = async (savePath = false) => {
+    if (!this.token) {
+      return;
+    }
+
+    client.post(`/auth.delete`);
+
     // remove user and team from localStorage
-    localStorage.setItem(
-      AUTH_STORE,
-      JSON.stringify({
-        user: null,
-        team: null,
-        policies: [],
-      })
-    );
+    Storage.set(AUTH_STORE, {
+      user: null,
+      team: null,
+      policies: [],
+    });
     this.token = null;
 
     // if this logout was forced from an authenticated route then

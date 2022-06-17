@@ -27,10 +27,12 @@ function getSortByField<T>(
 
 function naturalSortBy<T>(
   items: T[],
-  key: string | (() => string),
+  key: string | ((item: T) => string),
   sortOptions?: NaturalSortOptions
 ): T[] {
-  if (!items) return [];
+  if (!items) {
+    return [];
+  }
   const sort = sortOptions
     ? naturalSort({
         caseSensitive: sortOptions.caseSensitive,

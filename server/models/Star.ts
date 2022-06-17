@@ -1,17 +1,44 @@
-import { DataTypes, sequelize } from "../sequelize";
+import {
+  Column,
+  DataType,
+  BelongsTo,
+  ForeignKey,
+  Table,
+} from "sequelize-typescript";
+import Collection from "./Collection";
+import Document from "./Document";
+import User from "./User";
+import IdModel from "./base/IdModel";
+import Fix from "./decorators/Fix";
 
-const Star = sequelize.define("star", {
-  id: {
-    type: DataTypes.UUID,
-    defaultValue: DataTypes.UUIDV4,
-    primaryKey: true,
-  },
-});
+@Table({ tableName: "stars", modelName: "star" })
+@Fix
+class Star extends IdModel {
+  @Column
+  index: string | null;
 
-// @ts-expect-error ts-migrate(7006) FIXME: Parameter 'models' implicitly has an 'any' type.
-Star.associate = (models) => {
-  Star.belongsTo(models.Document);
-  Star.belongsTo(models.User);
-};
+  // associations
+
+  @BelongsTo(() => User, "userId")
+  user: User;
+
+  @ForeignKey(() => User)
+  @Column(DataType.UUID)
+  userId: string;
+
+  @BelongsTo(() => Document, "documentId")
+  document: Document | null;
+
+  @ForeignKey(() => Document)
+  @Column(DataType.UUID)
+  documentId: string | null;
+
+  @BelongsTo(() => Collection, "collectionId")
+  collection: Collection | null;
+
+  @ForeignKey(() => Collection)
+  @Column(DataType.UUID)
+  collectionId: string | null;
+}
 
 export default Star;

@@ -1,126 +1,173 @@
+import type { SaveOptions } from "sequelize";
+import {
+  ForeignKey,
+  AfterSave,
+  BeforeCreate,
+  BelongsTo,
+  Column,
+  IsIP,
+  IsUUID,
+  Table,
+  DataType,
+} from "sequelize-typescript";
 import { globalEventQueue } from "../queues";
-import { DataTypes, sequelize } from "../sequelize";
+import Collection from "./Collection";
+import Document from "./Document";
+import Team from "./Team";
+import User from "./User";
+import IdModel from "./base/IdModel";
+import Fix from "./decorators/Fix";
 
-const Event = sequelize.define("event", {
-  id: {
-    type: DataTypes.UUID,
-    defaultValue: DataTypes.UUIDV4,
-    primaryKey: true,
-  },
-  modelId: DataTypes.UUID,
-  name: DataTypes.STRING,
-  ip: DataTypes.STRING,
-  data: DataTypes.JSONB,
-});
+@Table({ tableName: "events", modelName: "event" })
+@Fix
+class Event extends IdModel {
+  @IsUUID(4)
+  @Column(DataType.UUID)
+  modelId: string;
 
-// @ts-expect-error ts-migrate(7006) FIXME: Parameter 'models' implicitly has an 'any' type.
-Event.associate = (models) => {
-  Event.belongsTo(models.User, {
-    as: "user",
-    foreignKey: "userId",
-  });
-  Event.belongsTo(models.User, {
-    as: "actor",
-    foreignKey: "actorId",
-  });
-  Event.belongsTo(models.Collection, {
-    as: "collection",
-    foreignKey: "collectionId",
-  });
-  Event.belongsTo(models.Collection, {
-    as: "document",
-    foreignKey: "documentId",
-  });
-  Event.belongsTo(models.Team, {
-    as: "team",
-    foreignKey: "teamId",
-  });
-};
+  @Column
+  name: string;
 
-// @ts-expect-error ts-migrate(7006) FIXME: Parameter 'event' implicitly has an 'any' type.
-Event.beforeCreate((event) => {
-  if (event.ip) {
-    // cleanup IPV6 representations of IPV4 addresses
-    event.ip = event.ip.replace(/^::ffff:/, "");
+  @IsIP
+  @Column
+  ip: string | null;
+
+  @Column(DataType.JSONB)
+  data: Record<string, any>;
+
+  // hooks
+
+  @BeforeCreate
+  static cleanupIp(model: Event) {
+    if (model.ip) {
+      // cleanup IPV6 representations of IPV4 addresses
+      model.ip = model.ip.replace(/^::ffff:/, "");
+    }
   }
-});
-// @ts-expect-error ts-migrate(7006) FIXME: Parameter 'event' implicitly has an 'any' type.
-Event.afterCreate((event) => {
-  globalEventQueue.add(event);
-});
 
-// add can be used to send events into the event system without recording them
-// in the database or audit trail
-// @ts-expect-error ts-migrate(7006) FIXME: Parameter 'event' implicitly has an 'any' type.
-Event.add = (event) => {
-  const now = new Date();
-  globalEventQueue.add(
-    Event.build({
-      createdAt: now,
-      updatedAt: now,
-      ...event,
-    })
-  );
-};
+  @AfterSave
+  static async enqueue(model: Event, options: SaveOptions<Event>) {
+    if (options.transaction) {
+      options.transaction.afterCommit(() => void globalEventQueue.add(model));
+      return;
+    }
+    void globalEventQueue.add(model);
+  }
 
-Event.ACTIVITY_EVENTS = [
-  "collections.create",
-  "collections.delete",
-  "collections.move",
-  "collections.permission_changed",
-  "documents.publish",
-  "documents.archive",
-  "documents.unarchive",
-  "documents.move",
-  "documents.delete",
-  "documents.permanent_delete",
-  "documents.restore",
-  "revisions.create",
-  "users.create",
-];
-Event.AUDIT_EVENTS = [
-  "api_keys.create",
-  "api_keys.delete",
-  "authenticationProviders.update",
-  "collections.create",
-  "collections.update",
-  "collections.permission_changed",
-  "collections.move",
-  "collections.add_user",
-  "collections.remove_user",
-  "collections.add_group",
-  "collections.remove_group",
-  "collections.delete",
-  "collections.export_all",
-  "documents.create",
-  "documents.publish",
-  "documents.update",
-  "documents.archive",
-  "documents.unarchive",
-  "documents.move",
-  "documents.delete",
-  "documents.permanent_delete",
-  "documents.restore",
-  "groups.create",
-  "groups.update",
-  "groups.delete",
-  "pins.create",
-  "pins.update",
-  "pins.delete",
-  "revisions.create",
-  "shares.create",
-  "shares.update",
-  "shares.revoke",
-  "teams.update",
-  "users.create",
-  "users.update",
-  "users.signin",
-  "users.promote",
-  "users.demote",
-  "users.invite",
-  "users.suspend",
-  "users.activate",
-  "users.delete",
-];
+  // associations
+
+  @BelongsTo(() => User, "userId")
+  user: User;
+
+  @ForeignKey(() => User)
+  @Column(DataType.UUID)
+  userId: string;
+
+  @BelongsTo(() => Document, "documentId")
+  document: Document;
+
+  @ForeignKey(() => Document)
+  @Column(DataType.UUID)
+  documentId: string;
+
+  @BelongsTo(() => User, "actorId")
+  actor: User;
+
+  @ForeignKey(() => User)
+  @Column(DataType.UUID)
+  actorId: string;
+
+  @BelongsTo(() => Collection, "collectionId")
+  collection: Collection;
+
+  @ForeignKey(() => Collection)
+  @Column(DataType.UUID)
+  collectionId: string;
+
+  @BelongsTo(() => Team, "teamId")
+  team: Team;
+
+  @ForeignKey(() => Team)
+  @Column(DataType.UUID)
+  teamId: string;
+
+  /*
+   * Schedule can be used to send events into the event system without recording
+   * them in the database or audit trail – consider using a task instead.
+   */
+  static schedule(event: Partial<Event>) {
+    const now = new Date();
+    globalEventQueue.add(
+      this.build({
+        createdAt: now,
+        updatedAt: now,
+        ...event,
+      })
+    );
+  }
+
+  static ACTIVITY_EVENTS = [
+    "collections.create",
+    "collections.delete",
+    "collections.move",
+    "collections.permission_changed",
+    "documents.publish",
+    "documents.unpublish",
+    "documents.archive",
+    "documents.unarchive",
+    "documents.move",
+    "documents.delete",
+    "documents.permanent_delete",
+    "documents.restore",
+    "revisions.create",
+    "users.create",
+  ];
+
+  static AUDIT_EVENTS = [
+    "api_keys.create",
+    "api_keys.delete",
+    "authenticationProviders.update",
+    "collections.create",
+    "collections.update",
+    "collections.permission_changed",
+    "collections.move",
+    "collections.add_user",
+    "collections.remove_user",
+    "collections.add_group",
+    "collections.remove_group",
+    "collections.delete",
+    "collections.export_all",
+    "documents.create",
+    "documents.publish",
+    "documents.update",
+    "documents.archive",
+    "documents.unarchive",
+    "documents.move",
+    "documents.delete",
+    "documents.permanent_delete",
+    "documents.restore",
+    "groups.create",
+    "groups.update",
+    "groups.delete",
+    "pins.create",
+    "pins.update",
+    "pins.delete",
+    "revisions.create",
+    "shares.create",
+    "shares.update",
+    "shares.revoke",
+    "teams.update",
+    "users.create",
+    "users.update",
+    "users.signin",
+    "users.signout",
+    "users.promote",
+    "users.demote",
+    "users.invite",
+    "users.suspend",
+    "users.activate",
+    "users.delete",
+  ];
+}
 
 export default Event;

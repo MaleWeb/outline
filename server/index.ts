@@ -1,8 +1,10 @@
-import env from "./env"; // eslint-disable-line import/order
+/* eslint-disable import/order */
+import env from "./env";
 
-import "./tracing"; // must come before importing any instrumented module
+import "./logging/tracing"; // must come before importing any instrumented module
 
 import http from "http";
+import https from "https";
 import Koa from "koa";
 import compress from "koa-compress";
 import helmet from "koa-helmet";
@@ -10,36 +12,32 @@ import logger from "koa-logger";
 import onerror from "koa-onerror";
 import Router from "koa-router";
 import { uniq } from "lodash";
+import { AddressInfo } from "net";
 import stoppable from "stoppable";
 import throng from "throng";
-import Logger from "./logging/logger";
+import Logger from "./logging/Logger";
 import { requestErrorHandler } from "./logging/sentry";
 import services from "./services";
 import { getArg } from "./utils/args";
+import { getSSLOptions } from "./utils/ssl";
 import { checkEnv, checkMigrations } from "./utils/startup";
 import { checkUpdates } from "./utils/updates";
 
-// If a services flag is passed it takes priority over the enviroment variable
+// If a services flag is passed it takes priority over the environment variable
 // for example: --services=web,worker
 const normalizedServiceFlag = getArg("services");
 
 // The default is to run all services to make development and OSS installations
 // easier to deal with. Separate services are only needed at scale.
 const serviceNames = uniq(
-  (
-    normalizedServiceFlag ||
-    env.SERVICES ||
-    "collaboration,websockets,worker,web"
-  )
+  (normalizedServiceFlag || env.SERVICES)
     .split(",")
     .map((service) => service.trim())
 );
 
 // The number of processes to run, defaults to the number of CPU's available
 // for the web service, and 1 for collaboration during the beta period.
-let processCount = env.WEB_CONCURRENCY
-  ? parseInt(env.WEB_CONCURRENCY, 10)
-  : undefined;
+let processCount = env.WEB_CONCURRENCY;
 
 if (serviceNames.includes("collaboration")) {
   if (processCount !== 1) {
@@ -53,11 +51,11 @@ if (serviceNames.includes("collaboration")) {
 }
 
 // This function will only be called once in the original process
-function master() {
-  checkEnv();
-  checkMigrations();
+async function master() {
+  await checkEnv();
+  await checkMigrations();
 
-  if (env.ENABLE_UPDATES !== "false" && process.env.NODE_ENV === "production") {
+  if (env.TELEMETRY && env.ENVIRONMENT === "production") {
     checkUpdates();
     setInterval(checkUpdates, 24 * 3600 * 1000);
   }
@@ -65,14 +63,22 @@ function master() {
 
 // This function will only be called in each forked process
 async function start(id: number, disconnect: () => void) {
+  // Find if SSL certs are available
+  const ssl = getSSLOptions();
+  const useHTTPS = !!ssl.key && !!ssl.cert;
+
   // If a --port flag is passed then it takes priority over the env variable
   const normalizedPortFlag = getArg("port", "p");
   const app = new Koa();
-  const server = stoppable(http.createServer(app.callback()));
+  const server = stoppable(
+    useHTTPS
+      ? https.createServer(ssl, app.callback())
+      : http.createServer(app.callback())
+  );
   const router = new Router();
 
   // install basic middleware shared by all services
-  if ((env.DEBUG || "").includes("http")) {
+  if (env.DEBUG.includes("http")) {
     app.use(logger((str) => Logger.info("http", str)));
   }
 
@@ -104,8 +110,12 @@ async function start(id: number, disconnect: () => void) {
   server.on("listening", () => {
     const address = server.address();
 
-    // @ts-expect-error ts-migrate(2531) FIXME: Object is possibly 'null'.
-    Logger.info("lifecycle", `Listening on http://localhost:${address.port}`);
+    Logger.info(
+      "lifecycle",
+      `Listening on ${useHTTPS ? "https" : "http"}://localhost:${
+        (address as AddressInfo).port
+      }`
+    );
   });
   server.listen(normalizedPortFlag || env.PORT || "3000");
   process.once("SIGTERM", shutdown);

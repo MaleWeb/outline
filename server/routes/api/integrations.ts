@@ -2,21 +2,22 @@ import Router from "koa-router";
 import auth from "@server/middlewares/authentication";
 import { Event } from "@server/models";
 import Integration from "@server/models/Integration";
-import policy from "@server/policies";
+import { authorize } from "@server/policies";
 import { presentIntegration } from "@server/presenters";
 import { assertSort, assertUuid, assertArray } from "@server/validation";
 import pagination from "./middlewares/pagination";
 
-const { authorize } = policy;
 const router = new Router();
 
 router.post("integrations.list", auth(), pagination(), async (ctx) => {
   let { direction } = ctx.body;
   const { sort = "updatedAt" } = ctx.body;
-  if (direction !== "ASC") direction = "DESC";
+  if (direction !== "ASC") {
+    direction = "DESC";
+  }
   assertSort(sort, Integration);
 
-  const user = ctx.state.user;
+  const { user } = ctx.state;
   const integrations = await Integration.findAll({
     where: {
       teamId: user.teamId,
@@ -25,6 +26,7 @@ router.post("integrations.list", auth(), pagination(), async (ctx) => {
     offset: ctx.state.pagination.offset,
     limit: ctx.state.pagination.limit,
   });
+
   ctx.body = {
     pagination: ctx.state.pagination,
     data: integrations.map(presentIntegration),
